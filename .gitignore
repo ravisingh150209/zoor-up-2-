@@ -1,0 +1,48 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Environment secrets. Keep the safe template committed.
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
+mobile/.env
+
+# Local fallback database may contain personal data and password hashes.
+backend/data/zoorup_db.json
+backend/data/zoorup_db.json.tmp
+
+# Python & Virtual Environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build & Test artifacts
+test-results/
+.firebase/
+uploads/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

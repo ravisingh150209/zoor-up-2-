@@ -1,0 +1,47 @@
+{
+  "name": "ZOOR UP — Run Your Business",
+  "short_name": "ZOOR UP",
+  "description": "Run Your Business. Turn Customers Into Regulars. Modern billing, QR menus, loyalty rewards, and customer management.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#FAFAFB",
+  "theme_color": "#1A2B49",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["business", "finance", "productivity", "shopping"],
+  "icons": [
+    {
+      "src": "/zoorup-logo.jpg",
+      "sizes": "192x192 512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Business Hub",
+      "short_name": "Business",
+      "url": "/business",
+      "description": "Open Business Owner Portal"
+    },
+    {
+      "name": "Customer Pass",
+      "short_name": "Customer",
+      "url": "/customer",
+      "description": "Open Customer Rewards Pass"
+    },
+    {
+      "name": "POS Billing",
+      "short_name": "POS",
+      "url": "/business/pos",
+      "description": "Quick POS Terminal"
+    }
+  ]
+}

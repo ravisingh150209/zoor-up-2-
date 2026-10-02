@@ -1,0 +1,484 @@
+/* ==========================================================================
+   ZOOR UP — MODERN RESPONSIVE PUBLIC NAVBAR
+   Theme: 70% White + 30% Light Orange Accents
+   ========================================================================== */
+
+.zoorup-navbar {
+  position: sticky;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 999;
+  height: 68px;
+  background: #FAFAFB;
+  border-bottom: 1px solid #E2E8F0;
+  box-shadow: 0 2px 10px rgba(26, 43, 73, 0.05);
+  transition: all 0.25s ease;
+}
+
+.zoorup-navbar-inner {
+  max-width: 1280px;
+  height: 100%;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+/* Brand Link */
+.navbar-brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-decoration: none;
+  flex-shrink: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.navbar-brand-link:hover {
+  opacity: 0.95;
+  transform: translateY(-0.5px);
+}
+
+.navbar-brand-title {
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: #1A2B49;
+  line-height: 1;
+}
+
+.navbar-brand-accent {
+  color: #F59E0B;
+}
+
+/* Desktop Action Container */
+.navbar-desktop-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Icon Buttons with Tooltips */
+.navbar-icon-tooltip-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.navbar-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  color: #1A2B49;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  outline: none;
+}
+
+.navbar-icon-btn:hover {
+  color: #F59E0B;
+  background: #F8FAFC;
+  border-color: #CBD5E1;
+  transform: translateY(-1.5px);
+  box-shadow: 0 4px 12px rgba(26, 43, 73, 0.08);
+}
+
+.navbar-icon-btn:focus-visible {
+  border-color: #1A2B49;
+  box-shadow: 0 0 0 3px rgba(26, 43, 73, 0.15);
+}
+
+.navbar-icon-btn:active {
+  transform: translateY(0);
+}
+
+/* Desktop Tooltip */
+.navbar-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: #1A2B49;
+  border: 1px solid #243B5F;
+  color: #FFFFFF;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.35rem 0.65rem;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  box-shadow: 0 10px 20px -3px rgba(26, 43, 73, 0.15);
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+  z-index: 1050;
+}
+
+.navbar-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 5px solid #1A2B49;
+}
+
+.navbar-icon-tooltip-wrapper:hover .navbar-tooltip,
+.navbar-icon-tooltip-wrapper:focus-within .navbar-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Sign In Desktop Button: White background, Deep Navy text, Subtle Navy border #CBD5E1 */
+.navbar-btn-signin {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  height: 38px;
+  padding: 0 0.95rem;
+  border-radius: 10px;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  color: #1A2B49;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.navbar-btn-signin:hover {
+  background: #F8FAFC;
+  border-color: #94A3B8;
+  color: #1A2B49;
+  transform: translateY(-1px);
+}
+
+/* Register Business CTA Button: Deep Navy background #1A2B49, White text, hover #243B5F */
+.navbar-btn-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 38px;
+  padding: 0 1.15rem;
+  border-radius: 10px;
+  background: #1A2B49;
+  border: none;
+  color: #FFFFFF;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(26, 43, 73, 0.2);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.navbar-btn-cta:hover {
+  background: #243B5F;
+  color: #FFFFFF;
+  box-shadow: 0 4px 14px rgba(26, 43, 73, 0.28);
+  transform: translateY(-1px);
+}
+
+/* Mobile Header Bar Elements */
+.navbar-mobile-header {
+  display: none;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.navbar-mobile-left {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.navbar-hamburger-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  color: #1A2B49;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.navbar-hamburger-btn:hover,
+.navbar-hamburger-btn:active {
+  background: #F8FAFC;
+  border-color: #CBD5E1;
+}
+
+.navbar-mobile-signin {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 34px;
+  padding: 0 0.8rem;
+  border-radius: 8px;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  color: #1A2B49;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.navbar-mobile-signin:hover,
+.navbar-mobile-signin:active {
+  background: #F8FAFC;
+  border-color: #1A2B49;
+  color: #1A2B49;
+}
+
+/* Mobile Drawer Overlay */
+.navbar-mobile-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 43, 73, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 1000;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.25s ease, visibility 0.25s ease;
+}
+
+.navbar-mobile-overlay.open {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Mobile Drawer Menu: Deep Navy #1A2B49 Background */
+.navbar-mobile-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(340px, 86vw);
+  background: #1A2B49;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 10px 0 30px rgba(0, 0, 0, 0.25);
+  z-index: 1001;
+  transform: translateX(-100%);
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.navbar-mobile-drawer.open {
+  transform: translateX(0);
+}
+
+.navbar-drawer-header {
+  padding: 1.25rem 1.25rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: #1A2B49;
+}
+
+.navbar-drawer-header .navbar-brand-title {
+  color: #FFFFFF;
+}
+
+.navbar-drawer-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #FFFFFF;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.navbar-drawer-close-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #FFFFFF;
+}
+
+.navbar-drawer-nav {
+  padding: 1rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.navbar-drawer-item {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #FFFFFF;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.navbar-drawer-item:hover,
+.navbar-drawer-item:active {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: #F59E0B;
+  transform: translateX(3px);
+}
+
+.navbar-drawer-icon-wrap {
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #CBD5E1;
+  flex-shrink: 0;
+  transition: color 0.2s ease;
+}
+
+.navbar-drawer-item:hover .navbar-drawer-icon-wrap,
+.navbar-drawer-item:active .navbar-drawer-icon-wrap {
+  color: #F59E0B;
+}
+
+.navbar-drawer-item-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  line-height: 1.2;
+}
+
+.navbar-drawer-item-sub {
+  font-size: 0.75rem;
+  color: #CBD5E1;
+  margin-top: 2px;
+}
+
+/* Primary Highlight CTA in Drawer: Amber Accent background + White text */
+.navbar-drawer-item.highlight-cta {
+  background: #F59E0B;
+  border-color: #D97706;
+  margin-top: 0.5rem;
+}
+
+.navbar-drawer-item.highlight-cta .navbar-drawer-icon-wrap {
+  background: #D97706;
+  color: #FFFFFF;
+  border-color: transparent;
+}
+
+.navbar-drawer-item.highlight-cta .navbar-drawer-item-title {
+  color: #FFFFFF;
+}
+
+.navbar-drawer-item.highlight-cta .navbar-drawer-item-sub {
+  color: #FEF3C7;
+}
+
+.navbar-drawer-footer {
+  padding: 1.25rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.75rem;
+  color: #CBD5E1;
+  text-align: center;
+}
+
+/* ==========================================================================
+   RESPONSIVE BREAKPOINTS (320px, 360px, 375px, 390px, 412px, 430px, 768px, 1024px+)
+   ========================================================================== */
+
+@media (max-width: 768px) {
+  .zoorup-navbar {
+    height: 60px;
+  }
+
+  .zoorup-navbar-inner {
+    padding: 0 0.85rem;
+  }
+
+  .navbar-brand-link.hide-on-mobile {
+    display: none !important;
+  }
+
+  .navbar-desktop-actions {
+    display: none !important;
+  }
+
+  .navbar-mobile-header {
+    display: flex !important;
+  }
+}
+
+@media (min-width: 769px) {
+  .navbar-brand-link.hide-on-mobile {
+    display: inline-flex !important;
+  }
+
+  .navbar-mobile-header {
+    display: none !important;
+  }
+
+  .navbar-desktop-actions {
+    display: flex !important;
+  }
+
+  .navbar-mobile-overlay,
+  .navbar-mobile-drawer {
+    display: none !important;
+  }
+}
+
+/* Extra small screens <= 360px: ensure no text wrap or clip */
+@media (max-width: 360px) {
+  .zoorup-navbar-inner {
+    padding: 0 0.5rem;
+    gap: 0.5rem;
+  }
+
+  .navbar-brand-title {
+    font-size: 1.15rem;
+  }
+
+  .navbar-mobile-signin {
+    padding: 0 0.55rem;
+    font-size: 0.75rem;
+  }
+}
