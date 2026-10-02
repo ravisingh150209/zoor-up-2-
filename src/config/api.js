@@ -13,9 +13,9 @@ export const getApiBaseUrl = () => {
     if (host === 'localhost' || host === '127.0.0.1') {
       return ''; // Vite proxy routes /api to http://127.0.0.1:8000
     }
-    return 'https://zoorup-api.onrender.com';
+    return 'https://zoor-up-2.onrender.com';
   }
-  return 'https://zoorup-api.onrender.com';
+  return 'https://zoor-up-2.onrender.com';
 };
 
 export const API_BASE_URL = getApiBaseUrl();
