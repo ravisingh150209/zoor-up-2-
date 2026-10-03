@@ -12,7 +12,7 @@ import { useToast } from '../../context/ToastContext';
 import { customerService } from '../../services/customerService';
 
 export const CustomerProfile = () => {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const { addToast } = useToast();
 
   const [profile, setProfile] = useState(null);
@@ -36,13 +36,15 @@ export const CustomerProfile = () => {
     setLoading(true);
     try {
       const data = await customerService.getProfile(user);
-      setProfile(data);
-      setName(data.name || '');
-      setPhone(data.phone || '');
-      setEmail(data.email || '');
-      setAddress(data.address || '');
-      setBirthday(data.birthday || '');
-      setProfileImage(data.profile_image_url || data.avatar || null);
+      if (data) {
+        setProfile(data);
+        setName(data.name || '');
+        setPhone(data.phone || '');
+        setEmail(data.email || '');
+        setAddress(data.address || '');
+        setBirthday(data.birthday || data.dob || '');
+        setProfileImage(data.profile_image_url || data.avatar || null);
+      }
     } catch (err) {
       console.error('Failed to load profile:', err);
     } finally {
@@ -58,6 +60,9 @@ export const CustomerProfile = () => {
         avatar: url,
       });
       setProfile((prev) => ({ ...prev, ...updated }));
+      if (typeof refreshUser === 'function') {
+        refreshUser().catch(() => {});
+      }
       addToast(url ? 'Profile photo uploaded successfully!' : 'Profile photo removed', 'success');
     } catch (err) {
       addToast('Failed to update profile photo', 'error');
@@ -77,6 +82,9 @@ export const CustomerProfile = () => {
       };
       const updated = await customerService.updateProfile(user, updates);
       setProfile((prev) => ({ ...prev, ...updated }));
+      if (typeof refreshUser === 'function') {
+        refreshUser().catch(() => {});
+      }
       addToast('Customer profile updated successfully!', 'success');
     } catch (err) {
       addToast(err.message || 'Failed to save profile', 'error');
@@ -85,15 +93,26 @@ export const CustomerProfile = () => {
     }
   };
 
-  const customerId = profile?.customer_id || (user?.id ? `ZUP-CUS-${user.id.slice(-6).toUpperCase()}` : 'ZUP-CUS-NEW');
-  const customerQrUrl = `https://app.zoorup.com/customer/${customerId}`;
-  const points = profile?.points ?? 0;
-  const stamps = profile?.stamps ?? 0;
-  const totalVisits = profile?.total_visits ?? 0;
-  const totalSpent = profile?.total_spent ?? 0;
-  const tier = profile?.membership_tier || profile?.rank || 'MEMBER';
-  const displayName = profile?.name ? profile.name : 'Complete your profile';
-  const displayEmail = profile?.email ? profile.email : 'Add email address';
+  const customerId = profile?.customer_id || profile?.id || user?.customer_id || user?.id || '';
+  const origin = typeof window !== 'undefined' && window.location?.origin
+    ? window.location.origin
+    : 'https://zoor-up-9b3a3.web.app';
+  const customerQrUrl = customerId ? `${origin}/customer/${customerId}` : origin;
+  const points = profile?.points ?? user?.points ?? 0;
+  const stamps = profile?.stamps ?? user?.stamps ?? 0;
+  const totalVisits = profile?.total_visits ?? user?.total_visits ?? 0;
+  const totalSpent = profile?.total_spent ?? user?.total_spent ?? 0;
+  const tier = profile?.membership_tier || profile?.rank || user?.membership_tier || user?.rank || 'MEMBER';
+  const displayName = profile?.name || user?.name ? (profile?.name || user?.name) : 'Complete your profile';
+  const displayEmail = profile?.email || user?.email ? (profile?.email || user?.email) : 'Add email address';
+
+  if (loading && !profile) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px' }}>
+        <RefreshCw className="animate-spin" size={28} style={{ color: '#1A2B49' }} />
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '680px', margin: '0 auto', width: '100%' }}>

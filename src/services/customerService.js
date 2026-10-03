@@ -193,7 +193,7 @@ export const customerService = {
         });
         if (resp.ok) {
           const apiData = await resp.json();
-          if (apiData && apiData.customer_id) {
+          if (apiData && (apiData.customer_id || apiData.id)) {
             return {
               ...apiData,
               points: Number(apiData.points || 0),
@@ -204,10 +204,31 @@ export const customerService = {
             };
           }
         }
-      } catch (_) {}
+      } catch (err) {
+        console.warn('[CUSTOMER] Profile fetch error:', err);
+      }
     }
 
     if (isProductionEnvironment()) {
+      if (user && (user.customer_id || user.id)) {
+        return {
+          id: user.id,
+          customer_id: user.customer_id || user.id,
+          name: user.name || user.full_name || '',
+          phone: user.phone || '',
+          email: user.email || '',
+          points: Number(user.points || 0),
+          stamps: Number(user.stamps || 0),
+          total_visits: Number(user.total_visits || 0),
+          total_spent: Number(user.total_spent || 0),
+          membership_tier: user.membership_tier || user.rank || 'BASIC',
+          address: user.address || '',
+          avatar: user.avatar || user.profile_image_url || null,
+          profile_image_url: user.profile_image_url || user.avatar || null,
+          created_at: user.created_at,
+          joined_date: user.created_at?.split('T')[0] || '2026',
+        };
+      }
       throw new Error('Customer profile is unavailable from the backend.');
     }
 
