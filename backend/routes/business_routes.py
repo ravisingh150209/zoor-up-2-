@@ -379,14 +379,24 @@ def generate_unique_business_slug(name: str, biz_id: str, businesses_col) -> str
         counter += 1
         slug = f"{base_slug}-{counter}"
 
+@router.get("/public/offers/{business_id}")
+@router.get("/customer/offers/{business_id}")
+def list_public_business_offers(business_id: str):
+    vouchers_col = get_collection("vouchers")
+    vouchers = vouchers_col.find({"business_id": business_id, "status": "ACTIVE"})
+    return {"success": True, "vouchers": vouchers, "offers": vouchers}
+
+
+@router.get("/business/offers")
 @router.get("/business/vouchers")
 def list_business_vouchers(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
     biz = _get_business_for_owner(current_user)
     vouchers_col = get_collection("vouchers")
     vouchers = vouchers_col.find({"business_id": biz["id"]})
-    return {"success": True, "vouchers": vouchers}
+    return {"success": True, "vouchers": vouchers, "offers": vouchers}
 
 
+@router.post("/business/offers")
 @router.post("/business/vouchers")
 def create_business_voucher(
     req: VoucherCreateRequest,
@@ -510,6 +520,7 @@ def get_business_voucher(voucher_id: str, current_user: dict = Depends(require_r
     return {"success": True, "voucher": voucher}
 
 
+@router.put("/business/offers/{voucher_id}")
 @router.put("/business/vouchers/{voucher_id}")
 def update_business_voucher(
     voucher_id: str,
@@ -518,7 +529,7 @@ def update_business_voucher(
 ):
     biz = _get_business_for_owner(current_user)
     vouchers_col = get_collection("vouchers")
-    voucher = vouchers_col.find_one({"voucher_id": voucher_id, "business_id": biz["id"]})
+    voucher = vouchers_col.find_one({"voucher_id": voucher_id, "business_id": biz["id"]}) or vouchers_col.find_one({"id": voucher_id, "business_id": biz["id"]})
     if not voucher:
         raise HTTPException(status_code=404, detail="Voucher not found.")
 
@@ -530,20 +541,23 @@ def update_business_voucher(
     if "audience_type" in updates:
         updates["audience_type"] = str(updates["audience_type"]).upper()
     updates["updated_at"] = datetime.now().isoformat()
-    vouchers_col.update_one({"voucher_id": voucher_id}, {"$set": updates})
-    updated = vouchers_col.find_one({"voucher_id": voucher_id})
+    v_id = voucher.get("voucher_id") or voucher.get("id")
+    vouchers_col.update_one({"voucher_id": v_id}, {"$set": updates})
+    updated = vouchers_col.find_one({"voucher_id": v_id}) or vouchers_col.find_one({"id": v_id})
     return {"success": True, "voucher": updated}
 
 
+@router.delete("/business/offers/{voucher_id}")
 @router.delete("/business/vouchers/{voucher_id}")
 def delete_business_voucher(voucher_id: str, current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
     biz = _get_business_for_owner(current_user)
     vouchers_col = get_collection("vouchers")
-    voucher = vouchers_col.find_one({"voucher_id": voucher_id, "business_id": biz["id"]})
+    voucher = vouchers_col.find_one({"voucher_id": voucher_id, "business_id": biz["id"]}) or vouchers_col.find_one({"id": voucher_id, "business_id": biz["id"]})
     if not voucher:
         raise HTTPException(status_code=404, detail="Voucher not found.")
-    vouchers_col.update_one({"voucher_id": voucher_id}, {"$set": {"status": "ARCHIVED", "updated_at": datetime.now().isoformat()}})
-    return {"success": True, "voucher_id": voucher_id, "status": "ARCHIVED"}
+    v_id = voucher.get("voucher_id") or voucher.get("id")
+    vouchers_col.update_one({"voucher_id": v_id}, {"$set": {"status": "ARCHIVED", "updated_at": datetime.now().isoformat()}})
+    return {"success": True, "voucher_id": v_id, "status": "ARCHIVED"}
 
 
 @router.get("/business/profile")

@@ -112,6 +112,7 @@ class BusinessInviteAcceptRequest(BaseModel):
 
 class VoucherCreateRequest(BaseModel):
     title: str
+    code: Optional[str] = None
     description: Optional[str] = ""
     discount_type: str = "PERCENTAGE"
     discount_value: float = 0
@@ -126,6 +127,7 @@ class VoucherCreateRequest(BaseModel):
 
 class VoucherUpdateRequest(BaseModel):
     title: Optional[str] = None
+    code: Optional[str] = None
     description: Optional[str] = None
     discount_type: Optional[str] = None
     discount_value: Optional[float] = None
