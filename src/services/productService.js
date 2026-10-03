@@ -16,24 +16,39 @@ export const productService = {
 
     let list = [];
 
-    // 1. Try public menu / business products API
+    // 1. Try dedicated business products API if authenticated
     try {
-      const resp = await fetch(`${API_BASE}/api/public/menu/${encodeURIComponent(businessId)}`, {
-        headers: { 'Accept': 'application/json' }
+      const resp = await fetch(`${API_BASE}/api/business/${encodeURIComponent(businessId)}/products`, {
+        headers: getAuthHeaders()
       });
       if (resp.ok) {
         const data = await resp.json();
-        if (data?.menu?.items && Array.isArray(data.menu.items)) {
-          list = data.menu.items;
-          if (!isProductionEnvironment()) {
-            const existing = localDB.getProducts().filter(p => p.business_id !== businessId);
-            localDB.saveProducts([...existing, ...list]);
-          }
+        if (Array.isArray(data)) {
+          list = data;
         }
       }
-      if (!resp.ok) throw new Error('Unable to load products from the server.');
-    } catch (error) {
-      if (isProductionEnvironment()) throw error;
+    } catch (_) {}
+
+    // 2. Try public menu / storefront API if list empty
+    if (list.length === 0) {
+      try {
+        const resp = await fetch(`${API_BASE}/api/public/menu/${encodeURIComponent(businessId)}`, {
+          headers: { 'Accept': 'application/json' }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data?.menu?.items && Array.isArray(data.menu.items)) {
+            list = data.menu.items;
+          }
+        }
+      } catch (error) {
+        if (isProductionEnvironment() && list.length === 0) throw error;
+      }
+    }
+
+    if (!isProductionEnvironment() && list.length > 0) {
+      const existing = localDB.getProducts().filter(p => p.business_id !== businessId);
+      localDB.saveProducts([...existing, ...list]);
     }
 
     // 2. Fallback to localDB if API failed or returned empty
