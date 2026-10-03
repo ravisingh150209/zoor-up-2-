@@ -90,7 +90,12 @@ async def add_security_headers(request: Request, call_next):
 async def safe_internal_error(request: Request, exc: Exception):
     logger.error("Unhandled API exception for %s %s (%s)", request.method, request.url.path, type(exc).__name__)
     message = "An internal server error occurred." if IS_PRODUCTION else str(exc)
-    return JSONResponse(status_code=500, content={"detail": message})
+    origin = request.headers.get("origin")
+    headers = {}
+    if origin and (origin in ALLOWED_ORIGINS or not IS_PRODUCTION):
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(status_code=500, content={"detail": message}, headers=headers)
 
 
 @app.exception_handler(RequestValidationError)
@@ -99,7 +104,12 @@ async def safe_validation_error(request: Request, exc: RequestValidationError):
         {"loc": error.get("loc"), "msg": error.get("msg"), "type": error.get("type")}
         for error in exc.errors()
     ]
-    return JSONResponse(status_code=422, content={"detail": errors})
+    origin = request.headers.get("origin")
+    headers = {}
+    if origin and (origin in ALLOWED_ORIGINS or not IS_PRODUCTION):
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(status_code=422, content={"detail": errors}, headers=headers)
 
 # Include API Routers
 app.include_router(auth_router)
