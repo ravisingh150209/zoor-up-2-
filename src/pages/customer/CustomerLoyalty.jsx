@@ -71,7 +71,7 @@ export const CustomerLoyalty = () => {
 
       const chosenBusinessId = selectedBusinessId && connectedBusinesses.some((biz) => biz.id === selectedBusinessId)
         ? selectedBusinessId
-        : connectedBusinesses.length === 1
+        : connectedBusinesses.length >= 1
           ? connectedBusinesses[0].id
           : null;
 
@@ -86,15 +86,36 @@ export const CustomerLoyalty = () => {
         return;
       }
 
-      const [businessLoyalty, allRewards, claimed] = await Promise.all([
-        loyaltyService.getBusinessLoyalty(chosenBusinessId),
-        loyaltyService.getRewards(chosenBusinessId),
-        customerId ? loyaltyService.getClaimedRewards(customerId).catch(() => []) : Promise.resolve([]),
-      ]);
+      let businessLoyalty = null;
+      try {
+        businessLoyalty = await loyaltyService.getBusinessLoyalty(chosenBusinessId);
+      } catch (e) {
+        console.warn('Direct business loyalty fetch fallback to customer home:', e);
+      }
 
-      setPoints(Number(businessLoyalty?.points ?? 0));
-      setStamps(Number(businessLoyalty?.stamps ?? 0));
-      setVisits(Number(businessLoyalty?.visits ?? 0));
+      let allRewards = [];
+      try {
+        allRewards = await loyaltyService.getRewards(chosenBusinessId);
+      } catch (e) {
+        console.warn('Rewards fetch error:', e);
+      }
+
+      let claimed = [];
+      if (customerId) {
+        try {
+          claimed = await loyaltyService.getClaimedRewards(customerId);
+        } catch (e) {
+          console.warn('Claimed rewards fetch error:', e);
+        }
+      }
+
+      const pointsVal = businessLoyalty?.points !== undefined ? Number(businessLoyalty.points) : Number(homeData.points ?? homeData.customer?.points ?? 0);
+      const stampsVal = businessLoyalty?.stamps !== undefined ? Number(businessLoyalty.stamps) : Number(homeData.stamps ?? homeData.customer?.stamps ?? 0);
+      const visitsVal = businessLoyalty?.visits !== undefined ? Number(businessLoyalty.visits) : (Array.isArray(homeData.visits) ? homeData.visits.length : 0);
+
+      setPoints(pointsVal);
+      setStamps(stampsVal);
+      setVisits(visitsVal);
       setRewards(Array.isArray(allRewards) ? allRewards : []);
       setClaimedRewards(Array.isArray(claimed) ? claimed : []);
     } catch (err) {
@@ -248,13 +269,13 @@ export const CustomerLoyalty = () => {
               {(points ?? 0).toLocaleString()} <span style={{ fontSize: '1.1rem', fontWeight: 600, color: '#FFFFFF' }}>Points</span>
             </div>
             <p style={{ fontSize: '0.85rem', color: '#CBD5E1', margin: 0 }}>
-              Current Rank: <strong style={{ color: '#F59E0B' }}>{rankInfo.currentTier?.rank || 'STARTER'} Tier</strong> • {rankInfo.currentTier?.perk || '1x Points on Purchases'}
+              Current Rank: <strong style={{ color: '#F59E0B' }}>{rankInfo.currentTier?.rank || rankInfo.currentTier?.name || 'BASIC'} Tier</strong> • {rankInfo.currentTier?.perk || '1x Points on Purchases'}
             </p>
           </div>
 
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <Badge style={{ fontSize: '0.8rem', padding: '0.4rem 0.85rem', background: 'rgba(245, 158, 11, 0.2)', color: '#F59E0B', border: '1px solid #F59E0B' }}>
-              {rankInfo.currentTier?.rank || 'STARTER'} VIP
+              {rankInfo.currentTier?.badge || `${rankInfo.currentTier?.rank || rankInfo.currentTier?.name || 'BASIC'} VIP`}
             </Badge>
             <Badge style={{ fontSize: '0.8rem', padding: '0.4rem 0.85rem', background: 'rgba(255, 255, 255, 0.1)', color: '#FFFFFF', border: '1px solid rgba(255,255,255,0.2)' }}>
               {stamps ?? 0} Stamps

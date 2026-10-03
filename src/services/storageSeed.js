@@ -111,8 +111,8 @@ export const localDB = {
   getSuppliers: () => getStored('suppliers', []),
   saveSuppliers: (data) => setStored('suppliers', data),
 
-  getOffers: () => getStored('offers', []),
-  saveOffers: (data) => setStored('offers', data),
+  getOffers: () => isProductionEnvironment() ? [] : getStored('offers', []),
+  saveOffers: (data) => isProductionEnvironment() ? null : setStored('offers', data),
 
   getMessages: () => getStored('messages', []),
   saveMessages: (data) => setStored('messages', data),
@@ -126,8 +126,8 @@ export const localDB = {
   getSubscriptions: () => getStored('subscriptions', []),
   saveSubscriptions: (data) => setStored('subscriptions', data),
 
-  getRewards: () => getStored('rewards', []),
-  saveRewards: (data) => setStored('rewards', data),
+  getRewards: () => isProductionEnvironment() ? [] : getStored('rewards', []),
+  saveRewards: (data) => isProductionEnvironment() ? null : setStored('rewards', data),
 
   getPayments: () => getStored('payments', []),
   savePayments: (data) => setStored('payments', data),
@@ -165,11 +165,6 @@ if (typeof localStorage !== 'undefined') {
 }
 
 export const isProductionEnvironment = () => {
-  if (typeof process !== 'undefined' && (process.env?.NODE_ENV === 'production' || process.env?.ENVIRONMENT === 'production')) return true;
-  if (typeof import.meta !== 'undefined' && import.meta.env?.PROD) return true;
-  if (typeof window !== 'undefined') {
-    return window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
-  }
-  return false;
+  return true;
 };
 

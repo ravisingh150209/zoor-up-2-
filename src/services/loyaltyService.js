@@ -52,6 +52,34 @@ const buildLoyaltyError = async (resp, fallbackMessage = 'Unable to load loyalty
   return new Error(detail || fallbackMessage);
 };
 
+export const formatVoucherAsOffer = (v) => {
+  if (!v) return null;
+  const id = v.voucher_id || v.id || v._id;
+  const isActive = String(v.status || '').toUpperCase() === 'ACTIVE' || v.active === true;
+  return {
+    ...v,
+    id: id,
+    voucher_id: id,
+    business_id: v.business_id,
+    code: v.code || '',
+    title: v.title || '',
+    description: v.description || '',
+    discount_type: (v.discount_type || 'PERCENTAGE').toUpperCase(),
+    discount_val: Number(v.discount_value !== undefined ? v.discount_value : (v.discount_val || 0)),
+    discount_value: Number(v.discount_value !== undefined ? v.discount_value : (v.discount_val || 0)),
+    min_order: Number(v.minimum_order_value !== undefined ? v.minimum_order_value : (v.min_order || 0)),
+    minimum_order_value: Number(v.minimum_order_value !== undefined ? v.minimum_order_value : (v.min_order || 0)),
+    max_discount: Number(v.max_discount || 0),
+    usage_limit: Number(v.usage_limit || 100),
+    times_used: Number(v.total_claimed || v.times_used || 0),
+    start_date: v.start_at || v.start_date || '',
+    end_date: (v.expires_at ? String(v.expires_at).split('T')[0] : (v.end_date || '')),
+    status: v.status || (isActive ? 'ACTIVE' : 'INACTIVE'),
+    active: isActive,
+    image_url: v.image_url || v.image || null,
+  };
+};
+
 export const loyaltyService = {
   // Fetch Authoritative Backend Loyalty Status
   getLoyaltyStatus: async (token = null) => {
@@ -127,10 +155,13 @@ export const loyaltyService = {
       pointsNeeded = Math.max(0, nextMin - pts);
     }
 
+    const normCurrentTier = currentTier ? { ...currentTier, rank: currentTier.name || currentTier.rank || 'BASIC' } : null;
+    const normNextTier = nextTier ? { ...nextTier, rank: nextTier.name || nextTier.rank || '' } : null;
+
     return {
       currentLevel: currentTier.level,
-      currentTier,
-      nextTier,
+      currentTier: normCurrentTier,
+      nextTier: normNextTier,
       progress,
       pointsNeeded,
       totalPoints: pts,
@@ -147,233 +178,364 @@ export const loyaltyService = {
   },
 
   getOffers: async (businessId) => {
-    await new Promise(r => setTimeout(r, 100));
     if (!businessId) return [];
-    return localDB.getOffers().filter(o => o.business_id === businessId && o.active);
+    try {
+      // 1. Try public offers endpoint for this business
+      const pubRes = await fetch(`${API_BASE}/api/public/offers/${encodeURIComponent(businessId)}`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (pubRes.ok) {
+        const pubData = await pubRes.json();
+        const list = Array.isArray(pubData.vouchers) ? pubData.vouchers : (Array.isArray(pubData.offers) ? pubData.offers : []);
+        if (list.length > 0) {
+          return list.map(formatVoucherAsOffer);
+        }
+      }
+
+      // 2. If user is customer with token, try customer assigned vouchers
+      const token = authStorage.getToken();
+      if (token) {
+        const custRes = await fetch(`${API_BASE}/api/customer/vouchers`, {
+          headers: { ...authStorage.getAuthHeaders(), 'Accept': 'application/json' }
+        });
+        if (custRes.ok) {
+          const custData = await custRes.json();
+          if (Array.isArray(custData.vouchers)) {
+            const bizVouchers = custData.vouchers
+              .filter(v => (!businessId || v.business_id === businessId) && String(v.status || '').toUpperCase() === 'AVAILABLE')
+              .map(formatVoucherAsOffer);
+            if (bizVouchers.length > 0) return bizVouchers;
+          }
+        }
+      }
+
+      // 3. Fallback to business vouchers if authenticated owner
+      const bizRes = await fetch(`${API_BASE}/api/business/vouchers`, {
+        headers: { ...authStorage.getAuthHeaders(), 'Accept': 'application/json' }
+      });
+      if (bizRes.ok) {
+        const bizData = await bizRes.json();
+        const list = Array.isArray(bizData.vouchers) ? bizData.vouchers : (Array.isArray(bizData) ? bizData : []);
+        return list
+          .filter(v => (!businessId || v.business_id === businessId) && String(v.status || '').toUpperCase() === 'ACTIVE')
+          .map(formatVoucherAsOffer);
+      }
+      return [];
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      return [];
+    }
   },
 
   getAllOffersForBusiness: async (businessId) => {
-    await new Promise(r => setTimeout(r, 100));
-    if (!businessId) return [];
-    return localDB.getOffers().filter(o => o.business_id === businessId);
+    try {
+      const response = await fetch(`${API_BASE}/api/business/vouchers`, {
+        headers: {
+          ...authStorage.getAuthHeaders(),
+          'Accept': 'application/json'
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const raw = Array.isArray(data.vouchers) ? data.vouchers : (Array.isArray(data) ? data : []);
+        return raw
+          .filter(v => (!businessId || v.business_id === businessId) && v.status !== 'ARCHIVED')
+          .map(formatVoucherAsOffer);
+      }
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to load offers (${response.status})`);
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      return [];
+    }
   },
 
   createOffer: async (businessId, offerData) => {
-    await new Promise(r => setTimeout(r, 200));
-    const list = localDB.getOffers();
-    const newOffer = {
-      id: `off_${Date.now()}`,
-      business_id: businessId,
-      code: offerData.code.toUpperCase().replace(/\s+/g, ''),
-      title: offerData.title || `Special Promo ${offerData.code}`,
-      discount_type: offerData.discount_type || 'PERCENTAGE',
-      discount_val: Number(offerData.discount_val),
-      min_order: Number(offerData.min_order || 0),
-      max_discount: Number(offerData.max_discount || 0),
-      start_date: offerData.start_date || new Date().toISOString().split('T')[0],
-      end_date: offerData.end_date || '2026-12-31',
+    const rawCode = (offerData.code || '').toUpperCase().replace(/\s+/g, '');
+    const title = offerData.title || `Special Promo ${rawCode}`;
+    const payload = {
+      title: title,
+      code: rawCode,
+      description: offerData.description || '',
+      discount_type: (offerData.discount_type || 'PERCENTAGE').toUpperCase(),
+      discount_value: Number(offerData.discount_val !== undefined ? offerData.discount_val : (offerData.discount_value || 0)),
+      minimum_order_value: Number(offerData.min_order !== undefined ? offerData.min_order : (offerData.minimum_order_value || 0)),
       usage_limit: Number(offerData.usage_limit || 100),
-      image_url: offerData.image_url || offerData.image || null,
-      image: offerData.image_url || offerData.image || null,
-      times_used: 0,
-      active: true,
+      start_at: offerData.start_date || new Date().toISOString(),
+      expires_at: offerData.end_date ? `${offerData.end_date}T23:59:59` : undefined,
+      status: 'ACTIVE',
+      audience_type: 'ALL_ELIGIBLE',
     };
 
-    list.unshift(newOffer);
-    localDB.saveOffers(list);
-    return newOffer;
+    const response = await fetch(`${API_BASE}/api/business/vouchers`, {
+      method: 'POST',
+      headers: {
+        ...authStorage.getAuthHeaders(),
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to create offer (${response.status})`);
+    }
+
+    const resData = await response.json();
+    return formatVoucherAsOffer(resData.voucher || resData);
   },
 
-  toggleOffer: async (id) => {
-    const list = localDB.getOffers();
-    const idx = list.findIndex(o => o.id === id);
-    if (idx !== -1) {
-      list[idx].active = !list[idx].active;
-      localDB.saveOffers(list);
-      return list[idx];
+  updateOffer: async (id, updateData) => {
+    const payload = {};
+    if (updateData.title !== undefined) payload.title = updateData.title;
+    if (updateData.code !== undefined) payload.code = updateData.code.toUpperCase().replace(/\s+/g, '');
+    if (updateData.description !== undefined) payload.description = updateData.description;
+    if (updateData.discount_type !== undefined) payload.discount_type = updateData.discount_type.toUpperCase();
+    if (updateData.discount_val !== undefined || updateData.discount_value !== undefined) {
+      payload.discount_value = Number(updateData.discount_val !== undefined ? updateData.discount_val : updateData.discount_value);
     }
-    throw new Error('Offer not found');
+    if (updateData.min_order !== undefined || updateData.minimum_order_value !== undefined) {
+      payload.minimum_order_value = Number(updateData.min_order !== undefined ? updateData.min_order : updateData.minimum_order_value);
+    }
+    if (updateData.usage_limit !== undefined) payload.usage_limit = Number(updateData.usage_limit);
+    if (updateData.end_date !== undefined) payload.expires_at = `${updateData.end_date}T23:59:59`;
+    if (updateData.status !== undefined) payload.status = String(updateData.status).toUpperCase();
+    if (updateData.active !== undefined) payload.status = updateData.active ? 'ACTIVE' : 'INACTIVE';
+
+    const cleanId = String(id || '').trim();
+    const response = await fetch(`${API_BASE}/api/business/vouchers/${encodeURIComponent(cleanId)}`, {
+      method: 'PUT',
+      headers: {
+        ...authStorage.getAuthHeaders(),
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update offer (${response.status})`);
+    }
+
+    const resData = await response.json();
+    return formatVoucherAsOffer(resData.voucher || resData);
+  },
+
+  toggleOffer: async (id, currentActiveState) => {
+    let nextStatus = 'INACTIVE';
+    if (currentActiveState !== undefined) {
+      nextStatus = currentActiveState ? 'INACTIVE' : 'ACTIVE';
+    } else {
+      try {
+        const getRes = await fetch(`${API_BASE}/api/business/vouchers/${encodeURIComponent(id)}`, {
+          headers: { ...authStorage.getAuthHeaders(), 'Accept': 'application/json' }
+        });
+        if (getRes.ok) {
+          const getData = await getRes.json();
+          const curr = getData.voucher || getData;
+          nextStatus = String(curr.status || '').toUpperCase() === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+        }
+      } catch (_) {}
+    }
+
+    const cleanId = String(id || '').trim();
+    const response = await fetch(`${API_BASE}/api/business/vouchers/${encodeURIComponent(cleanId)}`, {
+      method: 'PUT',
+      headers: {
+        ...authStorage.getAuthHeaders(),
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({ status: nextStatus })
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to toggle offer (${response.status})`);
+    }
+
+    const resData = await response.json();
+    return formatVoucherAsOffer(resData.voucher || resData);
+  },
+
+  deleteOffer: async (id) => {
+    const cleanId = String(id || '').trim();
+    const response = await fetch(`${API_BASE}/api/business/vouchers/${encodeURIComponent(cleanId)}`, {
+      method: 'DELETE',
+      headers: {
+        ...authStorage.getAuthHeaders(),
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to delete offer (${response.status})`);
+    }
+
+    return true;
   },
 
   validateCoupon: async (businessId, code, orderTotal) => {
-    await new Promise(r => setTimeout(r, 150));
-    const cleanCode = code.trim().toUpperCase();
-    const offers = localDB.getOffers().filter(o => o.business_id === businessId && o.active);
-    const offer = offers.find(o => o.code.toUpperCase() === cleanCode);
+    const cleanCode = (code || '').trim().toUpperCase();
+    if (!cleanCode) return { valid: false, error: 'Enter a coupon code' };
 
-    if (!offer) {
-      return { valid: false, error: 'Invalid coupon code' };
-    }
-
-    if (orderTotal < offer.min_order) {
-      return { valid: false, error: `Minimum order of ₹${offer.min_order} required for this coupon` };
-    }
-
-    let discountAmount = 0;
-    if (offer.discount_type === 'PERCENTAGE') {
-      discountAmount = Math.round((orderTotal * offer.discount_val) / 100);
-      if (offer.max_discount && discountAmount > offer.max_discount) {
-        discountAmount = offer.max_discount;
+    try {
+      let offers = [];
+      const res = await fetch(`${API_BASE}/api/business/vouchers`, {
+        headers: { ...authStorage.getAuthHeaders(), 'Accept': 'application/json' }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const raw = Array.isArray(data.vouchers) ? data.vouchers : (Array.isArray(data) ? data : []);
+        offers = raw.map(formatVoucherAsOffer);
+      } else {
+        const custRes = await fetch(`${API_BASE}/api/customer/vouchers`, {
+          headers: { ...authStorage.getAuthHeaders(), 'Accept': 'application/json' }
+        });
+        if (custRes.ok) {
+          const custData = await custRes.json();
+          offers = (custData.vouchers || []).map(formatVoucherAsOffer);
+        }
       }
-    } else {
-      discountAmount = Math.min(orderTotal, offer.discount_val);
-    }
 
-    return {
-      valid: true,
-      offer,
-      discountAmount,
-    };
+      const offer = offers.find(
+        o => o.code.toUpperCase() === cleanCode && (!businessId || o.business_id === businessId) && o.active
+      );
+
+      if (!offer) {
+        return { valid: false, error: 'Invalid coupon code or expired promo' };
+      }
+
+      if (Number(orderTotal) < Number(offer.min_order)) {
+        return { valid: false, error: `Minimum order of ₹${offer.min_order} required for this coupon` };
+      }
+
+      let discountAmount = 0;
+      if (offer.discount_type === 'PERCENTAGE') {
+        discountAmount = Math.round((Number(orderTotal) * Number(offer.discount_val)) / 100);
+        if (offer.max_discount && discountAmount > offer.max_discount) {
+          discountAmount = offer.max_discount;
+        }
+      } else {
+        discountAmount = Math.min(Number(orderTotal), Number(offer.discount_val));
+      }
+
+      return {
+        valid: true,
+        offer,
+        discountAmount,
+      };
+    } catch (err) {
+      return { valid: false, error: 'Unable to validate coupon at this time' };
+    }
   },
 
   getRewards: async (businessId) => {
     try {
       const url = businessId ? `${API_BASE}/api/customer/rewards?business_id=${encodeURIComponent(businessId)}` : `${API_BASE}/api/customer/rewards`;
       const authToken = authStorage.getToken();
+      const headers = { 'Accept': 'application/json' };
       if (authToken) {
-        const resp = await fetch(url, {
-          headers: {
-            'Authorization': `Bearer ${authToken}`,
-            'Accept': 'application/json'
-          }
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data && Array.isArray(data.rewards)) {
-            return data.rewards;
-          }
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+      const resp = await fetch(url, { headers });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && Array.isArray(data.rewards)) {
+          return data.rewards;
         }
       }
     } catch (e) {
-      if (isProductionEnvironment()) throw e;
-      console.warn('[LOYALTY] Failed to load rewards from API, falling back to localDB in dev', e);
+      console.warn('[LOYALTY] Failed to load rewards from API:', e);
     }
-
-    const list = localDB.getRewards();
-    if (!list) return [];
-    return businessId ? list.filter((r) => r.business_id === businessId) : list;
+    return [];
   },
 
   createReward: async (businessId, rewardData) => {
-    await new Promise((r) => setTimeout(r, 200));
-    const newRew = {
-      id: `rew_${Date.now()}`,
-      business_id: businessId,
-      title: rewardData.title,
-      points: Number(rewardData.points || 0),
-      stamps: Number(rewardData.stamps || 0),
-      value: Number(rewardData.value || 0),
-      category: rewardData.category || 'Voucher',
-      image_url: rewardData.image_url || null,
-      image: rewardData.image_url || null,
-      active: true,
-      created_at: new Date().toISOString(),
-    };
-    const current = localDB.getRewards() || [];
-    const updated = [newRew, ...current];
-    localDB.saveRewards(updated);
-    return newRew;
+    try {
+      const code = `REW-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+      const payload = {
+        title: rewardData.title,
+        code: code,
+        description: rewardData.description || `Redeemable for ${rewardData.points || 100} points`,
+        discount_type: 'FIXED',
+        discount_value: Number(rewardData.value || rewardData.points || 50),
+        minimum_order_value: 0,
+        usage_limit: 1000,
+        status: 'ACTIVE',
+        audience_type: 'ALL_ELIGIBLE',
+      };
+      const resp = await fetch(`${API_BASE}/api/business/vouchers`, {
+        method: 'POST',
+        headers: {
+          ...authStorage.getAuthHeaders(),
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      if (resp.ok) {
+        const resData = await resp.json();
+        return resData.voucher || resData;
+      }
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || 'Failed to publish reward');
+    } catch (e) {
+      console.error('[LOYALTY] Failed to create reward on backend', e);
+      throw e;
+    }
   },
 
   claimReward: async (customerId, rewardId, businessId) => {
-    try {
-      const authToken = authStorage.getToken();
-      if (authToken) {
-        const resp = await fetch(`${API_BASE}/api/customer/rewards/claim`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${authToken}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({ reward_id: rewardId, business_id: businessId })
-        });
-        const data = await resp.json();
-        if (resp.ok && data.success) {
-          return {
-            success: true,
-            voucher_code: data.voucher_code,
-            redemption_code: data.voucher_code,
-            claim: data.claim,
-            remainingPoints: data.remaining_points,
-            remainingStamps: data.remaining_points
-          };
-        }
-        if (!resp.ok) {
-          throw new Error(data.detail || 'Failed to claim reward');
-        }
-      }
-    } catch (e) {
-      if (isProductionEnvironment()) throw e;
-      console.warn('[LOYALTY] API claimReward failed, falling back in dev', e);
+    const authToken = authStorage.getToken();
+    if (!authToken) {
+      throw new Error('Please log in as a customer to claim rewards.');
     }
-
-    const allRewards = await loyaltyService.getRewards(businessId);
-    const reward = allRewards.find(r => r.id === rewardId);
-    if (!reward) throw new Error('Reward not found');
-
-    const claimRecord = {
-      id: `clm_${Date.now()}`,
-      reward_id: reward.id,
-      reward_title: reward.title,
-      customer_id: customerId,
-      voucher_code: `ZUP-${Math.random().toString(36).substring(2, 7).toUpperCase()}`,
-      claimed_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 30 * 86400 * 1000).toISOString().split('T')[0],
-      status: 'ACTIVE'
-    };
-
-    const CLAIMS_KEY = 'zoorup_claimed_rewards';
-    let claims = [];
-    try {
-      const stored = localStorage.getItem(CLAIMS_KEY);
-      if (stored) claims = JSON.parse(stored);
-    } catch (e) {}
-    claims.unshift(claimRecord);
-    try {
-      localStorage.setItem(CLAIMS_KEY, JSON.stringify(claims));
-    } catch (e) {}
-
-    return {
-      success: true,
-      voucher_code: claimRecord.voucher_code,
-      redemption_code: claimRecord.voucher_code,
-      claim: claimRecord,
-      remainingPoints: 0,
-      remainingStamps: 0
-    };
+    const resp = await fetch(`${API_BASE}/api/customer/rewards/claim`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({ reward_id: rewardId, business_id: businessId }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok && data.success) {
+      return {
+        success: true,
+        voucher_code: data.voucher_code,
+        redemption_code: data.redemption_code || data.voucher_code,
+        claim: data.claim,
+        remainingPoints: data.remaining_points ?? data.remainingPoints,
+        remainingStamps: data.remaining_stamps ?? data.remainingStamps ?? 0,
+      };
+    }
+    throw new Error(data.detail || 'Failed to claim reward');
   },
 
   getClaimedRewards: async (customerId) => {
+    const authToken = authStorage.getToken();
+    if (!authToken) return [];
     try {
-      const authToken = authStorage.getToken();
-      if (authToken) {
-        const resp = await fetch(`${API_BASE}/api/customer/rewards/claimed`, {
-          headers: {
-            'Authorization': `Bearer ${authToken}`,
-            'Accept': 'application/json'
-          }
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data && Array.isArray(data.claims)) {
-            return data.claims;
-          }
+      const resp = await fetch(`${API_BASE}/api/customer/rewards/claimed`, {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Accept': 'application/json',
+        },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && Array.isArray(data.claims)) {
+          return data.claims;
         }
       }
     } catch (e) {
-      if (isProductionEnvironment()) throw e;
-      console.warn('[LOYALTY] Failed to load claimed rewards from API, falling back in dev', e);
+      console.warn('[LOYALTY] Failed to load claimed rewards from API:', e);
     }
-
-    const CLAIMS_KEY = 'zoorup_claimed_rewards';
-    try {
-      const stored = localStorage.getItem(CLAIMS_KEY);
-      if (stored) {
-        const claims = JSON.parse(stored);
-        return claims.filter(c => c.customer_id === customerId);
-      }
-    } catch (e) {}
     return [];
   }
 };
