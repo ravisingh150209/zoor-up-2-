@@ -401,68 +401,110 @@ def get_customer_vouchers(current_user: dict = Depends(require_role([ROLE_CUSTOM
 
 
 @router.post("/vouchers/{voucher_id}/redeem")
+@router.post("/rewards/{voucher_id}/redeem")
 def redeem_customer_voucher(
     voucher_id: str,
     request: Request,
     current_user: dict = Depends(require_role([ROLE_CUSTOMER]))
 ):
-    """Redeem an assigned voucher only if it belongs to the authenticated customer's connected businesses."""
+    """Redeem an assigned voucher or claimed reward only if it belongs to the authenticated customer."""
     customer_profile = get_customer_profile(current_user)
     customer_id = customer_profile["customer_id"]
+    user_id = current_user.get("id")
     enforce_rate_limit("voucher-redeem-customer", customer_id, 20, 3600)
     enforce_rate_limit("voucher-redeem-ip", request.client.host if request.client else "unknown", 60, 3600)
-    cb_col = get_collection("customer_businesses")
-    allowed_business_ids = {c["business_id"] for c in cb_col.find({"customer_id": customer_id, "status": "active"})}
 
-    vouchers_col = get_collection("vouchers")
-    voucher = vouchers_col.find_one({"voucher_id": voucher_id})
-    if not voucher:
-        raise HTTPException(status_code=404, detail="Voucher not found.")
-    if voucher.get("business_id") not in allowed_business_ids:
-        raise HTTPException(status_code=403, detail="You do not have access to this voucher.")
-
+    clean_id = (voucher_id or "").strip()
     customer_vouchers_col = get_collection("customer_vouchers")
-    customer_voucher = customer_vouchers_col.find_one({"voucher_id": voucher_id, "customer_id": customer_id})
+    customer_voucher = (
+        customer_vouchers_col.find_one({"id": clean_id, "customer_id": customer_id}) or
+        customer_vouchers_col.find_one({"voucher_id": clean_id, "customer_id": customer_id}) or
+        customer_vouchers_col.find_one({"code": clean_id, "customer_id": customer_id}) or
+        customer_vouchers_col.find_one({"id": clean_id, "customer_id": user_id}) or
+        customer_vouchers_col.find_one({"voucher_id": clean_id, "customer_id": user_id}) or
+        customer_vouchers_col.find_one({"code": clean_id, "customer_id": user_id})
+    )
+
+    if not customer_voucher:
+        # Fallback to general vouchers collection if not yet in customer_vouchers
+        vouchers_col = get_collection("vouchers")
+        gen_v = vouchers_col.find_one({"voucher_id": clean_id}) or vouchers_col.find_one({"id": clean_id})
+        if gen_v:
+            cb_col = get_collection("customer_businesses")
+            allowed_bids = {c["business_id"] for c in cb_col.find({"customer_id": customer_id, "status": "active"})}
+            if gen_v.get("business_id") and gen_v.get("business_id") not in allowed_bids:
+                raise HTTPException(status_code=403, detail="You do not have access to this store voucher.")
+            # Auto-assign voucher to customer
+            customer_voucher = {
+                "id": f"cv_{uuid.uuid4().hex[:12]}",
+                "customer_id": customer_id,
+                "business_id": gen_v.get("business_id", "default"),
+                "voucher_id": gen_v.get("voucher_id") or gen_v.get("id"),
+                "code": gen_v.get("code") or f"ZUP-{uuid.uuid4().hex[:6].upper()}",
+                "title": gen_v.get("title", "Store Voucher"),
+                "status": "ACTIVE",
+                "claimed_at": datetime.now().isoformat(),
+                "created_at": datetime.now().isoformat()
+            }
+            customer_vouchers_col.insert_one(customer_voucher)
+
     if not customer_voucher:
         raise HTTPException(status_code=404, detail="This voucher is not assigned to your account.")
 
-    status_value = (voucher.get("status") or "ACTIVE").upper()
-    if status_value not in ["ACTIVE", "AVAILABLE"]:
-        raise HTTPException(status_code=400, detail="This voucher is not active.")
+    # Prevent duplicate redemption
+    if str(customer_voucher.get("status", "")).upper() == "REDEEMED":
+        raise HTTPException(status_code=400, detail="This voucher has already been redeemed.")
 
-    expires_at = customer_voucher.get("expires_at") or voucher.get("expires_at")
+    expires_at = customer_voucher.get("expires_at")
     if expires_at:
         try:
-            from datetime import datetime, timezone
             exp_str = str(expires_at).replace("Z", "+00:00")
             exp_dt = datetime.fromisoformat(exp_str)
             if exp_dt.tzinfo is None:
                 exp_dt = exp_dt.replace(tzinfo=timezone.utc)
             if exp_dt < datetime.now(timezone.utc):
-                customer_vouchers_col.update_one({"_id": customer_voucher["_id"]}, {"$set": {"status": "EXPIRED", "updated_at": datetime.now().isoformat()}})
+                rec_id = customer_voucher.get("id") or customer_voucher.get("_id")
+                customer_vouchers_col.update_one({"id": rec_id} if "id" in customer_voucher else {"_id": rec_id}, {"$set": {"status": "EXPIRED", "updated_at": datetime.now().isoformat()}})
                 raise HTTPException(status_code=400, detail="This voucher has expired.")
-        except ValueError:
+        except HTTPException:
+            raise
+        except Exception:
             pass
 
-    if customer_voucher.get("status") == "REDEEMED":
-        raise HTTPException(status_code=400, detail="This voucher has already been redeemed.")
-
-    usage_limit = int(voucher.get("usage_limit") or 1)
-    redemption_count = int(customer_voucher.get("redemption_count", 0))
-    if redemption_count >= usage_limit:
-        customer_vouchers_col.update_one({"_id": customer_voucher["_id"]}, {"$set": {"status": "REDEEMED", "redeemed_at": datetime.now().isoformat(), "updated_at": datetime.now().isoformat()}})
-        raise HTTPException(status_code=400, detail="This voucher has reached its usage limit.")
-
     now_iso = datetime.now().isoformat()
+    record_id = customer_voucher.get("id") or customer_voucher.get("_id")
+    filter_q = {"id": record_id} if "id" in customer_voucher else {"_id": record_id}
+    redemption_count = int(customer_voucher.get("redemption_count", 0)) + 1
+
     customer_vouchers_col.update_one(
-        {"_id": customer_voucher["_id"]},
-        {"$set": {"status": "REDEEMED", "redeemed_at": now_iso, "redemption_count": redemption_count + 1, "updated_at": now_iso}}
+        filter_q,
+        {"$set": {
+            "status": "REDEEMED",
+            "redeemed_at": now_iso,
+            "redemption_count": redemption_count,
+            "updated_at": now_iso
+        }}
     )
+
+    # Record loyalty transaction in Supabase
+    tx_col = get_collection("loyalty_transactions")
+    tx_col.insert_one({
+        "id": f"tx_{uuid.uuid4().hex[:12]}",
+        "customer_id": customer_id,
+        "business_id": customer_voucher.get("business_id", "default"),
+        "type": "REWARD_REDEEM",
+        "points_delta": 0,
+        "reference_id": customer_voucher.get("code") or clean_id,
+        "description": f"Redeemed {customer_voucher.get('title', 'Reward Voucher')}",
+        "created_at": now_iso
+    })
 
     return {
         "success": True,
         "status": "REDEEMED",
-        "voucher_id": voucher_id,
+        "voucher_id": customer_voucher.get("id") or clean_id,
+        "code": customer_voucher.get("code"),
+        "voucher_code": customer_voucher.get("code"),
         "customer_id": customer_id,
         "message": "Voucher redeemed successfully.",
         "redeemed_at": now_iso,
@@ -572,6 +614,27 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
     user_id = current_user["id"]
 
     cb_col = get_collection("customer_businesses")
+
+    # Auto-link any pending invites sent to this customer's email
+    cus_email = (current_user.get("email") or cus_profile.get("email") or "").strip().lower()
+    if cus_email:
+        invites_col = get_collection("business_invites")
+        pending_invites = invites_col.find({"customer_email": cus_email, "status": "active"})
+        for inv in pending_invites:
+            b_id = inv.get("business_id")
+            if b_id:
+                if not cb_col.find_one({"customer_id": customer_id, "business_id": b_id}):
+                    cb_col.insert_one({
+                        "id": f"cb_{uuid.uuid4().hex[:12]}",
+                        "customer_id": customer_id,
+                        "business_id": b_id,
+                        "source": "invite",
+                        "status": "active",
+                        "created_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat(),
+                    })
+                invites_col.update_one({"id": inv["id"]}, {"$set": {"status": "accepted", "updated_at": datetime.now().isoformat()}})
+
     connections = cb_col.find({"customer_id": customer_id, "status": "active"})
     if not connections:
         connections = cb_col.find({"customer_id": user_id, "status": "active"})

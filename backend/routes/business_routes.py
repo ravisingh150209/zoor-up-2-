@@ -5,13 +5,16 @@ import re
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, status, Depends
+from pydantic import BaseModel
 from backend.models import (
     OnboardingStepRequest,
     OnboardingBusinessRequest,
     VoucherCreateRequest,
     VoucherUpdateRequest,
     ROLE_BUSINESS_OWNER,
-    ROLE_CUSTOMER
+    ROLE_CUSTOMER,
+    ROLE_STAFF,
+    ROLE_SUPER_ADMIN,
 )
 from backend.database import get_collection
 from backend.auth import get_current_user, require_role
@@ -169,6 +172,118 @@ def list_connected_business_customers(current_user: dict = Depends(require_role(
             "last_visit": customer.get("last_visit"),
         })
     return {"success": True, "business_id": biz["id"], "customers": result}
+
+
+class BusinessAddCustomerRequest(BaseModel):
+    name: str
+    email: str = None
+    phone: str = None
+    points: int = 50
+    wallet_balance: float = 0.0
+    notes: str = ""
+
+
+@router.post("/business/customers")
+def add_business_customer(
+    req: BusinessAddCustomerRequest,
+    current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER, ROLE_STAFF, ROLE_SUPER_ADMIN]))
+):
+    """
+    Enables a business to add/register a customer and immediately creates
+    an active relationship in customer_businesses and initializes loyalty.
+    """
+    biz = _get_business_for_owner(current_user)
+    biz_id = biz["id"]
+    email = (req.email or "").strip().lower()
+    phone = (req.phone or "").strip()
+    name = (req.name or "").strip()
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Customer name is required.")
+    if not email and not phone:
+        raise HTTPException(status_code=400, detail="Customer email or mobile number is required.")
+
+    customers_col = get_collection("customers")
+    users_col = get_collection("users")
+    cb_col = get_collection("customer_businesses")
+    loyalty_col = get_collection("loyalty")
+
+    # 1. Check if customer already exists by email or phone
+    customer = None
+    if email:
+        customer = customers_col.find_one({"email": email})
+        if not customer:
+            user_doc = users_col.find_one({"email": email})
+            if user_doc:
+                customer = customers_col.find_one({"user_id": user_doc["id"]}) or customers_col.find_one({"customer_id": user_doc.get("customer_id")})
+    if not customer and phone:
+        customer = customers_col.find_one({"phone": phone})
+
+    now_iso = datetime.now().isoformat()
+    points = max(0, int(req.points or 50))
+
+    if not customer:
+        customer_id = f"ZUP-CUS-{uuid.uuid4().hex[:6].upper()}"
+        customer_record_id = f"cus_{uuid.uuid4().hex[:12]}"
+        customer = {
+            "id": customer_record_id,
+            "customer_id": customer_id,
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        customers_col.insert_one(customer)
+    else:
+        customer_id = customer.get("customer_id") or customer.get("id")
+
+    # 2. Idempotently create active connection in customer_businesses
+    connection = cb_col.find_one({"customer_id": customer_id, "business_id": biz_id})
+    if not connection:
+        connection_id = f"cb_{uuid.uuid4().hex[:12]}"
+        cb_col.insert_one({
+            "id": connection_id,
+            "customer_id": customer_id,
+            "business_id": biz_id,
+            "source": "business_added",
+            "status": "active",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+    elif connection.get("status") != "active":
+        cb_col.update_one({"id": connection["id"]}, {"$set": {"status": "active", "updated_at": now_iso}})
+
+    # 3. Initialize or update loyalty record
+    loyalty_record = loyalty_col.find_one({"customer_id": customer_id, "business_id": biz_id})
+    if not loyalty_record:
+        loyalty_col.insert_one({
+            "id": f"loyal_{uuid.uuid4().hex[:12]}",
+            "customer_id": customer_id,
+            "business_id": biz_id,
+            "points": points,
+            "stamps": 0,
+            "tier": "BASIC",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+    elif points > int(loyalty_record.get("points", 0)):
+        loyalty_col.update_one({"id": loyalty_record["id"]}, {"$set": {"points": points, "updated_at": now_iso}})
+
+    return {
+        "success": True,
+        "message": f"Customer {name} connected to {biz.get('name')}.",
+        "customer": {
+            "id": customer.get("id"),
+            "customer_id": customer_id,
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "business_id": biz_id,
+            "points": points,
+            "status": "active",
+        }
+    }
 
 
 @router.get("/business/customers/lookup")

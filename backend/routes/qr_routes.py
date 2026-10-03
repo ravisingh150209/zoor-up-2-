@@ -259,6 +259,25 @@ def parse_qr_code(qr_data: str) -> Dict[str, Any]:
                 "table_id": m_tbl.group(1) if m_tbl else None
             }
 
+    # Customer universal pass or link
+    m_cus = re.search(r"(?:https?://[^/]+)?/customer/([a-zA-Z0-9_-]+)", clean, re.IGNORECASE)
+    if m_cus:
+        m_bid_param = re.search(r'[?&]business_id=([a-zA-Z0-9_-]+)', clean)
+        return {
+            "valid": True,
+            "type": "customer",
+            "customer_id": m_cus.group(1),
+            "business_identifier": m_bid_param.group(1) if m_bid_param else None,
+        }
+
+    if clean.upper().startswith("ZUP-CUS-"):
+        return {
+            "valid": True,
+            "type": "customer",
+            "customer_id": clean,
+            "business_identifier": None,
+        }
+
     # 7. Raw identifier fallback
     return {
         "valid": True,
@@ -596,6 +615,20 @@ def resolve_qr_get(
             "target_url": destination,
             "web_url": web_url,
             "already_connected": bool(current_user and current_user.get("role") in ["customer", ROLE_CUSTOMER] and _link_customer_to_business(current_user.get("customer_id") or current_user.get("id"), biz_id, "invite")[0])
+        }
+
+    # Handle customer universal pass in GET resolver
+    if parsed.get("type") == "customer":
+        cus_id = parsed.get("customer_id")
+        destination = f"/customer/{cus_id}"
+        return {
+            "valid": True,
+            "success": True,
+            "type": "CUSTOMER",
+            "customer_id": cus_id,
+            "destination": destination,
+            "target_url": destination,
+            "web_url": f"https://zoor-up-9b3a3.web.app{destination}"
         }
 
     if not b_id:

@@ -537,5 +537,25 @@ export const loyaltyService = {
       console.warn('[LOYALTY] Failed to load claimed rewards from API:', e);
     }
     return [];
+  },
+
+  redeemReward: async (voucherId) => {
+    const authToken = authStorage.getToken();
+    if (!authToken) {
+      throw new Error('Please log in as a customer to redeem.');
+    }
+    const resp = await fetch(`${API_BASE}/api/customer/vouchers/${encodeURIComponent(voucherId)}/redeem`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok && data.success) {
+      return data;
+    }
+    throw new Error(data.detail || 'Failed to redeem reward');
   }
 };

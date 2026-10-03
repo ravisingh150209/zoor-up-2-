@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from backend.auth import require_role
+from backend.auth import require_role, get_current_user
 from backend.database import get_collection
 from backend.models import (
     OrderCreateRequest,
@@ -99,13 +99,44 @@ def create_order(
     if not business or (business.get("status") and str(business["status"]).upper() not in {"ACTIVE", "APPROVED"}):
         raise HTTPException(status_code=404, detail="Business not found or unavailable.")
 
-    connection = get_collection("customer_businesses").find_one({
+    cb_col = get_collection("customer_businesses")
+    connection = cb_col.find_one({
         "customer_id": customer_id,
         "business_id": business_id,
         "status": "active",
     })
     if not connection:
-        raise HTTPException(status_code=403, detail="Connect to this business before placing an order.")
+        connection = cb_col.find_one({
+            "customer_id": current_user.get("id"),
+            "business_id": business_id,
+            "status": "active",
+        })
+    if not connection:
+        now_str = _now_iso()
+        connection = {
+            "id": f"cb_{uuid.uuid4().hex[:12]}",
+            "customer_id": customer_id,
+            "business_id": business_id,
+            "source": "order",
+            "status": "active",
+            "created_at": now_str,
+            "updated_at": now_str,
+        }
+        cb_col.insert_one(connection)
+
+        # Also initialize loyalty account for this customer-store pair
+        loyalty_col = get_collection("loyalty")
+        if not loyalty_col.find_one({"customer_id": customer_id, "business_id": business_id}):
+            loyalty_col.insert_one({
+                "id": f"loyal_{uuid.uuid4().hex[:12]}",
+                "customer_id": customer_id,
+                "business_id": business_id,
+                "points": 0,
+                "stamps": 0,
+                "tier": "BASIC",
+                "created_at": now_str,
+                "updated_at": now_str,
+            })
 
     normalized_lines = []
     seen_products = {}
@@ -222,17 +253,34 @@ def create_order(
 
 
 @router.get("/orders/my")
-def get_my_orders(current_user: dict = Depends(require_role([ROLE_CUSTOMER]))):
+def get_my_orders(
+    business_id: Optional[str] = Query(None),
+    current_user: dict = Depends(require_role([ROLE_CUSTOMER]))
+):
     customer_id, _ = _customer_identity(current_user)
-    return _sorted_orders(get_collection("orders").find({"customer_id": customer_id}))
+    query = {"customer_id": customer_id}
+    if business_id:
+        query["business_id"] = business_id
+    return _sorted_orders(get_collection("orders").find(query))
 
 
 @router.get("/orders/{order_id}")
-def get_my_order(order_id: str, current_user: dict = Depends(require_role([ROLE_CUSTOMER]))):
-    customer_id, _ = _customer_identity(current_user)
-    order = get_collection("orders").find_one({"id": order_id, "customer_id": customer_id})
+def get_my_order(order_id: str, current_user: dict = Depends(get_current_user)):
+    orders = get_collection("orders")
+    order = orders.find_one({"id": order_id})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
+
+    role = (current_user.get("role") or "").upper()
+    if role in [ROLE_BUSINESS_OWNER, ROLE_STAFF]:
+        user_biz = _business_scope(current_user)
+        if order.get("business_id") != user_biz:
+            raise HTTPException(status_code=403, detail="Order access not allowed.")
+    elif role == ROLE_CUSTOMER:
+        customer_id, _ = _customer_identity(current_user)
+        if order.get("customer_id") != customer_id and order.get("customer_id") != current_user.get("id"):
+            raise HTTPException(status_code=403, detail="Order access not allowed.")
+
     return order
 
 
