@@ -8,13 +8,6 @@ export const getApiBaseUrl = () => {
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) {
     return import.meta.env.VITE_API_URL.replace(/\/+$/, '');
   }
-  if (typeof window !== 'undefined') {
-    const host = window.location.hostname;
-    if (host === 'localhost' || host === '127.0.0.1') {
-      return ''; // Vite proxy routes /api to http://127.0.0.1:8000
-    }
-    return 'https://zoor-up-2.onrender.com';
-  }
   return 'https://zoor-up-2.onrender.com';
 };
 

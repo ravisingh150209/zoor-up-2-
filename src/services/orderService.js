@@ -4,14 +4,17 @@ import { isProductionEnvironment } from './storageSeed.js';
 import { API_BASE_URL as API_BASE } from '../config/api.js';
 
 const request = async (path, options = {}) => {
+  const headers = {
+    Accept: 'application/json',
+    ...authStorage.getAuthHeaders(),
+    ...(options.headers || {}),
+  };
+  if (options.body) {
+    headers['Content-Type'] = 'application/json';
+  }
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...authStorage.getAuthHeaders(),
-      ...(options.headers || {}),
-    },
+    headers,
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {

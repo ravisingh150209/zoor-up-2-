@@ -20,6 +20,7 @@ import {
 import { QRGenerator } from '../../components/qr/QRGenerator';
 import { Button } from '../../components/ui/Button';
 import { Card, CardHeader } from '../../components/ui/Card';
+import { LoadingState } from '../../components/ui/States';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { businessService } from '../../services/businessService';
@@ -127,6 +128,10 @@ export const QRMenuManagement = () => {
   };
 
   const meta = getQRMeta();
+
+  if (!canonicalIdentifier && !user) {
+    return <LoadingState message="Loading your standardized QR standees..." fullPage />;
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', width: '100%', maxWidth: '100%', overflowX: 'hidden' }}>

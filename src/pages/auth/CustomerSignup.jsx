@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { User, Phone, Mail, Lock, ArrowRight, Sparkles, CheckCircle2, AlertCircle } from 'lucide-react';
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
@@ -10,6 +10,9 @@ import { useToast } from '../../context/ToastContext';
 import { GoogleSignInButton } from '../../components/auth/GoogleSignInButton';
 
 export const CustomerSignup = () => {
+  const [searchParams] = useSearchParams();
+  const redirectTarget = searchParams.get('redirect') || '/customer';
+
   const [authMode, setAuthMode] = useState('email'); // 'email' or 'otp'
   const [formData, setFormData] = useState({
     name: '',
@@ -136,7 +139,7 @@ export const CustomerSignup = () => {
       } else {
         setShowGoogleModal(false);
         addToast(`Welcome, ${res.user.name}!`, 'success');
-        navigate('/customer');
+        navigate(redirectTarget);
       }
     } catch {
       setErrorDetail('Google sign-in error');
@@ -226,7 +229,7 @@ export const CustomerSignup = () => {
             variant="primary"
             size="lg"
             block
-            onClick={() => navigate('/customer')}
+            onClick={() => navigate(redirectTarget)}
             icon={ArrowRight}
           >
             Enter Customer Hub

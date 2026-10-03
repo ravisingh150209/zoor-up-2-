@@ -24,13 +24,16 @@ const getCacheKey = (businessId) => ['subscription', String(businessId || '').tr
 
 import { API_BASE_URL } from '../config/api.js';
 
-const getRequestHeaders = (extraHeaders = {}) => {
-  return {
+const getRequestHeaders = (extraHeaders = {}, hasBody = false) => {
+  const headers = {
     'Accept': 'application/json',
-    'Content-Type': 'application/json',
     ...authStorage.getAuthHeaders(),
     ...extraHeaders,
   };
+  if (hasBody || extraHeaders['Content-Type']) {
+    headers['Content-Type'] = extraHeaders['Content-Type'] || 'application/json';
+  }
+  return headers;
 };
 
 const safeFetchJson = async (url, options = {}) => {

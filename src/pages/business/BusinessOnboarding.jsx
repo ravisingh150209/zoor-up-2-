@@ -265,9 +265,7 @@ export const BusinessOnboarding = () => {
     return <LoadingState message="Setting up your business onboarding..." fullPage />;
   }
 
-  const storefrontUrl = business?.slug
-    ? `${window.location.origin}/m/${business.slug}`
-    : `${window.location.origin}/m/store-${bizId || '1'}`;
+  const storefrontUrl = `${window.location.origin}/b/${business?.slug || bizId || 'store-1'}`;
 
   const STEPS_NAV = [
     { num: 1, title: 'Name', icon: Store },

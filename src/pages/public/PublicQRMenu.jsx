@@ -20,7 +20,9 @@ import {
 } from 'lucide-react';
 import { businessService } from '../../services/businessService';
 import { productService } from '../../services/productService';
+import { qrService } from '../../services/qrService';
 import { useCart } from '../../context/CartContext';
+import { useAuth } from '../../context/AuthContext';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { LoadingState } from '../../components/ui/States';
@@ -29,10 +31,17 @@ import { useToast } from '../../context/ToastContext';
 
 import { API_BASE_URL as API_BASE } from '../../config/api.js';
 
-export const PublicQRMenu = () => {
-  const { slug } = useParams();
+export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogData: propCatalogData }) => {
+  const params = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { addToast } = useToast();
+
+  const rawIdentifier = propSlug || params.slug || params.businessId || '';
+  const slug = (rawIdentifier && rawIdentifier !== 'undefined' && rawIdentifier !== 'null' && rawIdentifier !== 'None')
+    ? String(rawIdentifier).trim()
+    : (propBusiness?.id || '');
+
   const {
     items: cartItems,
     businessId: cartBusinessId,
@@ -44,23 +53,53 @@ export const PublicQRMenu = () => {
     totalCount
   } = useCart();
 
-  const [business, setBusiness] = useState(null);
-  const [products, setProducts] = useState([]);
+  const [business, setBusiness] = useState(propBusiness || null);
+  const [products, setProducts] = useState(
+    propCatalogData?.menu?.items || propCatalogData?.products || []
+  );
   const [categories, setCategories] = useState(['ALL']);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!propBusiness);
   const [errorType, setErrorType] = useState(null); // 'NOT_FOUND' | 'NETWORK_ERROR' | 'INVALID_QR'
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [search, setSearch] = useState('');
   const [conflictModalItem, setConflictModalItem] = useState(null);
 
+  // Synchronize when propBusiness or propCatalogData updates
   useEffect(() => {
-    loadStoreData();
+    if (propBusiness) {
+      setBusiness(propBusiness);
+      const menuItems = propCatalogData?.menu?.items || propCatalogData?.products || [];
+      if (menuItems.length > 0) {
+        setProducts(menuItems);
+        const cats = ['ALL', ...new Set(menuItems.map((p) => p.category).filter(Boolean))];
+        setCategories(cats);
+        setLoading(false);
+      }
+    }
+  }, [propBusiness, propCatalogData]);
+
+  // Connect authenticated customer idempotently to the business
+  useEffect(() => {
+    if (user && (user.role === 'customer' || user.role === 'CUSTOMER') && business?.id) {
+      qrService.connectBusiness(business.id, 'menu').catch(() => {});
+    }
+  }, [user, business?.id]);
+
+  useEffect(() => {
+    if (slug) {
+      loadStoreData();
+    } else if (!propBusiness) {
+      setErrorType('INVALID_QR');
+      setLoading(false);
+    }
   }, [slug]);
 
   const loadStoreData = async () => {
-    if (!slug || slug === 'undefined' || slug === 'null') {
-      setErrorType('INVALID_QR');
-      setLoading(false);
+    if (!slug) {
+      if (!propBusiness) {
+        setErrorType('INVALID_QR');
+        setLoading(false);
+      }
       return;
     }
 

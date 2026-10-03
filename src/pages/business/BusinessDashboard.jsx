@@ -53,10 +53,16 @@ export const BusinessDashboard = () => {
     try {
       const bizId = user?.business_id;
       const result = await businessService.getDashboardStats(bizId);
-      const orders = await orderService.getOrders(bizId);
+      let orders = [];
+      try {
+        orders = await orderService.getOrders(bizId);
+      } catch (orderErr) {
+        console.warn('Could not load recent orders:', orderErr);
+        orders = [];
+      }
       if (generation === requestGeneration.current) {
         setData(result);
-        setRecentOrders(orders.slice(0, 5));
+        setRecentOrders(Array.isArray(orders) ? orders.slice(0, 5) : []);
       }
     } catch (e) {
       console.error(e);
@@ -415,7 +421,7 @@ export const BusinessDashboard = () => {
               <Link to="/business/qr-menu" className="btn btn-primary btn-sm">
                 Generate & Print QR
               </Link>
-              <Link to={`/m/${business.slug}`} target="_blank" className="btn btn-outline btn-sm">
+              <Link to={`/b/${business?.slug || business?.id || user?.business_slug || user?.business_id}`} target="_blank" className="btn btn-outline btn-sm">
                 View Public Menu
               </Link>
             </div>

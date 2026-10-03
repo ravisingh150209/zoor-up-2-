@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { User, QrCode, Lock, ArrowRight, Sparkles, CheckCircle2, Phone, AlertCircle, KeyRound } from 'lucide-react';
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
@@ -10,6 +10,9 @@ import { useToast } from '../../context/ToastContext';
 import { GoogleSignInButton } from '../../components/auth/GoogleSignInButton';
 
 export const CustomerLogin = () => {
+  const [searchParams] = useSearchParams();
+  const redirectTarget = searchParams.get('redirect') || '/customer';
+
   const [loginMode, setLoginMode] = useState('id'); // 'id' or 'otp'
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -28,9 +31,9 @@ export const CustomerLogin = () => {
 
   React.useEffect(() => {
     if (!authLoading && isAuthenticated && user) {
-      navigate('/customer', { replace: true });
+      navigate(redirectTarget, { replace: true });
     }
-  }, [user, authLoading, isAuthenticated, navigate]);
+  }, [user, authLoading, isAuthenticated, navigate, redirectTarget]);
 
   const handleIdSubmit = async (e) => {
     e.preventDefault();
@@ -43,7 +46,7 @@ export const CustomerLogin = () => {
         addToast(res.error, 'error');
       } else {
         addToast(`Welcome back, ${res.user.name}!`, 'success');
-        navigate('/customer');
+        navigate(redirectTarget);
       }
     } catch (err) {
       setErrorMsg('Login failed. Please check your credentials.');
@@ -90,7 +93,7 @@ export const CustomerLogin = () => {
         addToast(res.error, 'error');
       } else {
         addToast(`Welcome, ${res.user.name || 'Member'}!`, 'success');
-        navigate('/customer');
+        navigate(redirectTarget);
       }
     } catch {
       setErrorMsg('Verification failed. Please retry.');
@@ -109,7 +112,7 @@ export const CustomerLogin = () => {
       } else {
         setShowGoogleModal(false);
         addToast(`Welcome, ${res.user.name}!`, 'success');
-        navigate('/customer');
+        navigate(redirectTarget);
       }
     } catch {
       setErrorMsg('Google sign in error');

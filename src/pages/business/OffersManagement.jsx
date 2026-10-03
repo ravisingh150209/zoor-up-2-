@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Tag, Plus, Power, Trash2, Calendar, IndianRupee, Percent } from 'lucide-react';
+import { Tag, Plus, Power, Trash2, Edit2, Calendar, IndianRupee, Percent } from 'lucide-react';
 import { loyaltyService } from '../../services/loyaltyService';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
@@ -18,6 +18,8 @@ export const OffersManagement = () => {
   const [offers, setOffers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingOfferId, setEditingOfferId] = useState(null);
 
   const [formData, setFormData] = useState({
     code: '',
@@ -30,6 +32,16 @@ export const OffersManagement = () => {
     end_date: '2026-12-31',
     usage_limit: 200,
     image_url: null,
+  });
+
+  const [editFormData, setEditFormData] = useState({
+    title: '',
+    discount_type: 'PERCENTAGE',
+    discount_val: 10,
+    min_order: 499,
+    max_discount: 150,
+    end_date: '2026-12-31',
+    usage_limit: 200,
   });
 
   const bizId = user?.business_id;
@@ -45,6 +57,7 @@ export const OffersManagement = () => {
       setOffers(data);
     } catch (e) {
       console.error(e);
+      addToast(e.message || 'Error loading promotional offers', 'error');
     } finally {
       setLoading(false);
     }
@@ -73,17 +86,57 @@ export const OffersManagement = () => {
       });
       loadOffers();
     } catch (e) {
-      addToast('Error saving promotional offer', 'error');
+      addToast(e.message || 'Error saving promotional offer', 'error');
     }
   };
 
-  const handleToggle = async (id) => {
+  const handleEditClick = (row) => {
+    setEditingOfferId(row.id || row.voucher_id);
+    setEditFormData({
+      title: row.title || '',
+      discount_type: row.discount_type || 'PERCENTAGE',
+      discount_val: row.discount_val || 10,
+      min_order: row.min_order || 0,
+      max_discount: row.max_discount || 0,
+      end_date: row.end_date || '2026-12-31',
+      usage_limit: row.usage_limit || 100,
+    });
+    setIsEditModalOpen(true);
+  };
+
+  const handleUpdateOffer = async (e) => {
+    e.preventDefault();
+    if (!editingOfferId) return;
     try {
-      await loyaltyService.toggleOffer(id);
-      addToast('Coupon status updated', 'info');
+      await loyaltyService.updateOffer(editingOfferId, editFormData);
+      addToast('Offer updated successfully', 'success');
+      setIsEditModalOpen(false);
+      setEditingOfferId(null);
       loadOffers();
     } catch (e) {
-      addToast('Error toggling coupon', 'error');
+      addToast(e.message || 'Error updating offer', 'error');
+    }
+  };
+
+  const handleToggle = async (row) => {
+    const id = row.id || row.voucher_id;
+    try {
+      await loyaltyService.toggleOffer(id, row.active);
+      addToast(`Coupon status set to ${row.active ? 'Disabled' : 'Active'}`, 'info');
+      loadOffers();
+    } catch (e) {
+      addToast(e.message || 'Error toggling coupon', 'error');
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Are you sure you want to deactivate and remove this coupon?')) return;
+    try {
+      await loyaltyService.deleteOffer(id);
+      addToast('Offer removed successfully', 'info');
+      loadOffers();
+    } catch (e) {
+      addToast(e.message || 'Error removing offer', 'error');
     }
   };
 
@@ -154,14 +207,32 @@ export const OffersManagement = () => {
       accessor: 'id',
       align: 'right',
       render: (id, row) => (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => handleToggle(id)}
-          title={row.active ? 'Disable Coupon' : 'Enable Coupon'}
-        >
-          <Power size={15} className={row.active ? 'text-emerald-400' : 'text-slate-500'} />
-        </Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', justifyContent: 'flex-end' }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => handleToggle(row)}
+            title={row.active ? 'Disable Coupon' : 'Enable Coupon'}
+          >
+            <Power size={15} className={row.active ? 'text-emerald-500' : 'text-slate-400'} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => handleEditClick(row)}
+            title="Edit Coupon"
+          >
+            <Edit2 size={15} className="text-slate-600" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => handleDelete(id || row.voucher_id)}
+            title="Delete / Archive Coupon"
+          >
+            <Trash2 size={15} className="text-rose-500" />
+          </Button>
+        </div>
       ),
     },
   ];
@@ -281,6 +352,81 @@ export const OffersManagement = () => {
               entityType="offer"
               businessId={bizId}
               bucket="offer-images"
+            />
+          </div>
+        </form>
+      </Modal>
+
+      {/* Edit Coupon Modal */}
+      <Modal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        title="Edit Promo Coupon"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setIsEditModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={handleUpdateOffer}>
+              Save Changes
+            </Button>
+          </>
+        }
+      >
+        <form onSubmit={handleUpdateOffer} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+          <div>
+            <Input
+              label="Campaign Title"
+              required
+              value={editFormData.title}
+              onChange={(e) => setEditFormData({ ...editFormData, title: e.target.value })}
+              placeholder="e.g. 20% Off Groceries"
+            />
+          </div>
+
+          <div className="grid-3">
+            <Select
+              label="Discount Type"
+              value={editFormData.discount_type}
+              onChange={(e) => setEditFormData({ ...editFormData, discount_type: e.target.value })}
+              options={[
+                { value: 'PERCENTAGE', label: 'Percentage (%)' },
+                { value: 'FIXED', label: 'Fixed Flat (₹)' },
+              ]}
+            />
+            <Input
+              label={editFormData.discount_type === 'PERCENTAGE' ? 'Discount Rate (%)' : 'Flat Discount (₹)'}
+              type="number"
+              required
+              value={editFormData.discount_val}
+              onChange={(e) => setEditFormData({ ...editFormData, discount_val: e.target.value })}
+            />
+            <Input
+              label="Minimum Order Value (₹)"
+              type="number"
+              value={editFormData.min_order}
+              onChange={(e) => setEditFormData({ ...editFormData, min_order: e.target.value })}
+            />
+          </div>
+
+          <div className="grid-3">
+            <Input
+              label="Max Discount Cap (₹)"
+              type="number"
+              value={editFormData.max_discount}
+              onChange={(e) => setEditFormData({ ...editFormData, max_discount: e.target.value })}
+            />
+            <Input
+              label="Expiry Date"
+              type="date"
+              value={editFormData.end_date}
+              onChange={(e) => setEditFormData({ ...editFormData, end_date: e.target.value })}
+            />
+            <Input
+              label="Total Redemptions Limit"
+              type="number"
+              value={editFormData.usage_limit}
+              onChange={(e) => setEditFormData({ ...editFormData, usage_limit: e.target.value })}
             />
           </div>
         </form>

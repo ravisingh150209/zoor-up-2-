@@ -23,9 +23,10 @@
     <script>
       if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
+          navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
             .then((reg) => {
               console.log('[ZOOR UP PWA] Service Worker registered with scope:', reg.scope);
+              reg.update().catch(() => {});
             })
             .catch((err) => {
               console.warn('[ZOOR UP PWA] Service Worker registration failed:', err);

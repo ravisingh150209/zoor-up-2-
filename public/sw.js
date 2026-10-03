@@ -1,5 +1,5 @@
 // ZOOR UP Production Service Worker (PWA)
-const CACHE_NAME = 'zoorup-pwa-v1';
+const CACHE_NAME = 'zoorup-pwa-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -41,12 +41,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Network-first for dynamic API calls
-  if (url.pathname.startsWith('/api') || url.hostname.includes('supabase.co')) {
-    event.respondWith(
-      fetch(event.request)
-        .catch(() => caches.match(event.request))
-    );
+  // Never intercept backend API calls or cross-origin service requests - pass directly to browser network stack
+  if (
+    url.origin !== self.location.origin ||
+    url.pathname.startsWith('/api') ||
+    url.hostname.includes('onrender.com') ||
+    url.hostname.includes('supabase.co')
+  ) {
     return;
   }
 

@@ -159,8 +159,14 @@ export const PublicBusinessHub = () => {
   }
 
   // If tab is purely 'menu', render the full digital menu directly
-  if (activeTab === 'menu' && catalogData) {
-    return <PublicQRMenu />;
+  if (activeTab === 'menu' && (catalogData || business)) {
+    return (
+      <PublicQRMenu
+        slug={(business?.slug && business.slug !== 'None' ? business.slug : business?.id) || resolvedIdentifier}
+        business={business}
+        catalogData={catalogData}
+      />
+    );
   }
 
   return (
@@ -296,7 +302,7 @@ export const PublicBusinessHub = () => {
                 key={tab.id}
                 onClick={() => {
                   if (tab.id === 'menu') {
-                    navigate(`/menu/${business.slug || business.id}`);
+                    navigate(`/menu/${(business?.slug && business.slug !== 'None' ? business.slug : business?.id) || resolvedIdentifier}`);
                   } else {
                     setActiveTab(tab.id);
                   }
@@ -354,7 +360,7 @@ export const PublicBusinessHub = () => {
             {/* Action Cards */}
             <Card style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               <div
-                onClick={() => navigate(`/menu/${business.slug || business.id}${tableId ? `?table=${tableId}` : ''}`)}
+                onClick={() => navigate(`/menu/${(business?.slug && business.slug !== 'None' ? business.slug : business?.id) || resolvedIdentifier}${tableId ? `?table=${tableId}` : ''}`)}
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem', borderRadius: '10px', background: 'var(--bg-surface-elevated, #F8FAFC)', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>

@@ -8,7 +8,8 @@ export const ALLOWED_IMAGE_TYPES = [
   'image/jpeg',
   'image/png',
   'image/webp',
-  'image/gif'
+  'image/gif',
+  'image/svg+xml'
 ];
 
 export const GALLERY_PLAN_LIMITS = {
@@ -61,6 +62,7 @@ export const uploadService = {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('entity_type', entityType);
+      if (bucket) formData.append('bucket', bucket);
       if (businessId) formData.append('business_id', businessId);
       if (userId) formData.append('user_id', userId);
 
@@ -88,9 +90,19 @@ export const uploadService = {
             };
           }
         }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        const errMsg = errData.detail || `Upload failed with status ${res.status}`;
+        console.error('[UPLOAD] Server error:', errMsg);
+        if (isProductionEnvironment()) {
+          throw new Error(errMsg);
+        }
       }
     } catch (err) {
-      // Backend not running on that port, fall through to Supabase or resilient client fallback
+      if (isProductionEnvironment()) {
+        throw err;
+      }
+      console.warn('Backend upload failed, attempting fallback:', err);
     }
 
     // 2. Try Supabase Storage if configured
