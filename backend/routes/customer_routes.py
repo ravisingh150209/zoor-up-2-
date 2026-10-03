@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, status, Depends, Request
 from backend.models import CustomerProfileUpdateRequest, QRCheckInRequest, ROLE_CUSTOMER
 from backend.database import get_collection
-from backend.auth import get_current_user, require_role
+from backend.auth import get_current_user, get_optional_current_user, require_role
 from backend.rate_limit import enforce_rate_limit
 
 router = APIRouter(prefix="/api/customer", tags=["Customer"])
@@ -331,7 +331,11 @@ def get_customer_business_loyalty(
         raise HTTPException(status_code=404, detail="Business not found.")
 
     cb_col = get_collection("customer_businesses")
-    if not cb_col.find_one({"customer_id": customer_id, "business_id": biz["id"], "status": "active"}):
+    is_connected = (
+        cb_col.find_one({"customer_id": customer_id, "business_id": biz["id"], "status": "active"}) or
+        cb_col.find_one({"customer_id": current_user["id"], "business_id": biz["id"], "status": "active"})
+    )
+    if not is_connected:
         raise HTTPException(status_code=403, detail="Customer is not connected to this business.")
 
     record = _get_customer_business_loyalty(customer_id, biz["id"])
@@ -931,13 +935,11 @@ DEFAULT_REWARDS = [
 @router.get("/rewards")
 def get_customer_rewards(
     business_id: Optional[str] = None,
-    current_user: dict = Depends(require_role([ROLE_CUSTOMER]))
+    current_user: Optional[dict] = Depends(get_optional_current_user)
 ):
     vouchers_col = get_collection("vouchers")
-    query = {"status": "active"}
-    if business_id:
-        query["business_id"] = business_id
-    biz_vouchers = vouchers_col.find(query)
+    raw_vouchers = vouchers_col.find({"business_id": business_id}) if business_id else vouchers_col.find({})
+    biz_vouchers = [v for v in raw_vouchers if str(v.get("status", "")).upper() in ("ACTIVE", "AVAILABLE")]
     rewards = []
     for v in biz_vouchers:
         rewards.append({
