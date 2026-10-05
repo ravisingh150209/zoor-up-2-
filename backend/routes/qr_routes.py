@@ -98,6 +98,31 @@ def get_public_businesses():
     return result
 
 
+@router.get("/public/customer/{customer_id}")
+def get_public_customer_card(customer_id: str):
+    """
+    Returns public digital loyalty pass card details for a customer.
+    Allows normal camera QR scans to resolve and display the verified customer card.
+    """
+    cus_col = get_collection("customers")
+    clean_id = customer_id.strip()
+    cus = cus_col.find_one({"customer_id": clean_id}) or cus_col.find_one({"id": clean_id})
+    if not cus:
+        raise HTTPException(status_code=404, detail="Customer pass not found.")
+    return {
+        "success": True,
+        "customer": {
+            "customer_id": cus.get("customer_id", clean_id),
+            "name": cus.get("name", "Member"),
+            "membership_tier": cus.get("membership_tier") or cus.get("rank") or "BASIC",
+            "points": int(cus.get("points") or 0),
+            "stamps": int(cus.get("stamps") or 0),
+            "total_visits": int(cus.get("total_visits") or 0),
+            "avatar": cus.get("avatar") or cus.get("profile_image_url")
+        }
+    }
+
+
 # =============================================================
 # 2. STANDARDIZED QR PARSING & RESOLUTION ENGINE
 # =============================================================
@@ -621,11 +646,17 @@ def resolve_qr_get(
     if parsed.get("type") == "customer":
         cus_id = parsed.get("customer_id")
         destination = f"/customer/{cus_id}"
+        cus_col = get_collection("customers")
+        cus = cus_col.find_one({"customer_id": cus_id}) or cus_col.find_one({"id": cus_id})
         return {
             "valid": True,
             "success": True,
             "type": "CUSTOMER",
-            "customer_id": cus_id,
+            "customer_id": (cus and cus.get("customer_id")) or cus_id,
+            "customer_name": (cus and cus.get("name")) or "Valued Customer",
+            "tier": (cus and (cus.get("membership_tier") or cus.get("rank"))) or "BASIC",
+            "points": (cus and cus.get("points")) or 0,
+            "stamps": (cus and cus.get("stamps")) or 0,
             "destination": destination,
             "target_url": destination,
             "web_url": f"https://zoor-up-9b3a3.web.app{destination}"
@@ -719,11 +750,17 @@ def resolve_qr(
     # Handle customer universal pass
     if parsed.get("type") == "customer":
         cus_id = parsed.get("customer_id")
+        cus_col = get_collection("customers")
+        cus = cus_col.find_one({"customer_id": cus_id}) or cus_col.find_one({"id": cus_id})
         return {
             "valid": True,
             "success": True,
             "type": "CUSTOMER",
-            "customer_id": cus_id,
+            "customer_id": (cus and cus.get("customer_id")) or cus_id,
+            "customer_name": (cus and cus.get("name")) or "Valued Customer",
+            "tier": (cus and (cus.get("membership_tier") or cus.get("rank"))) or "BASIC",
+            "points": (cus and cus.get("points")) or 0,
+            "stamps": (cus and cus.get("stamps")) or 0,
             "destination": f"/customer/{cus_id}",
             "target_url": f"/customer/{cus_id}"
         }

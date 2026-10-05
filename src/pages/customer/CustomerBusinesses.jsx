@@ -8,13 +8,15 @@ import {
   Sparkles,
   ArrowRight,
   Store,
-  Star
+  Star,
+  QrCode
 } from 'lucide-react';
-import { businessService } from '../../services/businessService';
+import { customerService } from '../../services/customerService';
 import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { SearchBar, Tabs } from '../../components/ui/Controls';
-import { LoadingState } from '../../components/ui/States';
+import { LoadingState, EmptyState } from '../../components/ui/States';
+import { Button } from '../../components/ui/Button';
 
 export const CustomerBusinesses = () => {
   const [businesses, setBusinesses] = useState([]);
@@ -39,10 +41,20 @@ export const CustomerBusinesses = () => {
   const loadBusinesses = async () => {
     setLoading(true);
     try {
-      const data = await businessService.getAllBusinesses({ category, search });
-      setBusinesses(data);
+      const homeData = await customerService.getCustomerHome();
+      let list = (homeData && Array.isArray(homeData.businesses)) ? homeData.businesses : [];
+
+      if (category && category !== 'All') {
+        list = list.filter(b => b.category && b.category.toLowerCase().includes(category.toLowerCase()));
+      }
+      if (search) {
+        const q = search.toLowerCase();
+        list = list.filter(b => (b.name && b.name.toLowerCase().includes(q)) || (b.city && b.city.toLowerCase().includes(q)));
+      }
+      setBusinesses(list);
     } catch (e) {
-      console.error(e);
+      console.error('Error loading connected businesses:', e);
+      setBusinesses([]);
     } finally {
       setLoading(false);
     }
@@ -51,9 +63,9 @@ export const CustomerBusinesses = () => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxWidth: '1000px', margin: '0 auto', width: '100%' }}>
       <div>
-        <h2 style={{ fontSize: '1.4rem', fontWeight: 800 }}>Explore Partnered Businesses</h2>
+        <h2 style={{ fontSize: '1.4rem', fontWeight: 800 }}>My Connected Stores</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-          Discover local groceries, cafes, pharmacies, and salons offering ZoorUp digital menus and loyalty perks.
+          Stores and businesses where you have checked in, placed orders, or joined the loyalty program.
         </p>
       </div>
 
@@ -70,7 +82,23 @@ export const CustomerBusinesses = () => {
       />
 
       {loading ? (
-        <LoadingState message="Discovering businesses..." />
+        <LoadingState message="Loading your connected stores..." />
+      ) : businesses.length === 0 ? (
+        <EmptyState
+          icon={Store}
+          title="No connected stores found"
+          description="Scan a ZOOR UP QR code at your favorite store or cafe to join their loyalty program and view their digital menu here."
+          action={
+            <Button
+              variant="primary"
+              onClick={() => navigate('/customer/scan-qr')}
+              icon={QrCode}
+              style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
+            >
+              Scan Store QR to Connect
+            </Button>
+          }
+        />
       ) : (
         <div
           style={{

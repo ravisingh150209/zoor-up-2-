@@ -72,7 +72,7 @@ export const orderService = {
 
   getOrderById: async (orderId) => {
     if (!orderId) throw new Error('Order ID is required.');
-    return request(`/api/business/orders/${encodeURIComponent(orderId)}`);
+    return request(`/api/orders/${encodeURIComponent(orderId)}`);
   },
 
   createOrder: async (orderData) => {

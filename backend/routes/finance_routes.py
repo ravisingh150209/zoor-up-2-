@@ -32,6 +32,7 @@ def _get_business_for_user(current_user: dict) -> dict:
 # 1. BILLING & INVOICES
 # -----------------------------------------------------------------------------
 class CreateInvoiceRequest(BaseModel):
+    business_id: Optional[str] = None
     order_id: Optional[str] = None
     customer_id: Optional[str] = None
     customer_name: Optional[str] = "Walk-in Customer"
@@ -103,17 +104,43 @@ def _award_loyalty_for_invoice(inv: dict, biz_id: str):
 def get_invoices(
     status: Optional[str] = None,
     search: Optional[str] = None,
+    invoice_id: Optional[str] = None,
+    order_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
-    biz = _get_business_for_user(current_user)
-    biz_id = biz["id"]
+    user_role = (current_user.get("role") or "").upper()
     invoices_col = get_collection("invoices")
 
-    filters = {"business_id": biz_id}
-    all_invoices = invoices_col.find(filters)
-    if not all_invoices:
-        # Also check store_id
-        all_invoices = invoices_col.find({"store_id": biz_id})
+    if user_role == ROLE_CUSTOMER:
+        cust_id = current_user.get("customer_id") or current_user.get("id")
+        user_id = current_user.get("id")
+        phone = current_user.get("phone")
+
+        customer_queries = [
+            {"customer_id": cust_id},
+            {"customer_id": user_id},
+        ]
+        if phone:
+            customer_queries.append({"customer_phone": phone})
+
+        query = {"$or": customer_queries}
+        if invoice_id:
+            query = {"id": invoice_id, **query}
+        elif order_id:
+            query = {"order_id": order_id, **query}
+
+        all_invoices = invoices_col.find(query)
+    else:
+        biz = _get_business_for_user(current_user)
+        biz_id = biz["id"]
+        filters = {"business_id": biz_id}
+        if invoice_id:
+            filters["id"] = invoice_id
+        elif order_id:
+            filters["order_id"] = order_id
+        all_invoices = invoices_col.find(filters)
+        if not all_invoices:
+            all_invoices = invoices_col.find({"store_id": biz_id})
 
     results = []
     for inv in all_invoices:
@@ -133,10 +160,49 @@ def get_invoices(
     return {"invoices": results}
 
 
+@router.get("/api/billing/invoices/{invoice_id}")
+def get_invoice_by_id(invoice_id: str, current_user: dict = Depends(get_current_user)):
+    invoices_col = get_collection("invoices")
+    inv = invoices_col.find_one({"id": invoice_id}) or invoices_col.find_one({"order_id": invoice_id})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found.")
+
+    user_role = (current_user.get("role") or "").upper()
+    if user_role == ROLE_CUSTOMER:
+        cust_id = current_user.get("customer_id") or current_user.get("id")
+        if inv.get("customer_id") not in [cust_id, current_user.get("id")] and inv.get("customer_phone") != current_user.get("phone"):
+            raise HTTPException(status_code=403, detail="Access denied to this invoice.")
+    elif user_role in [ROLE_BUSINESS_OWNER, ROLE_STAFF]:
+        biz = _get_business_for_user(current_user)
+        if inv.get("business_id") != biz["id"] and inv.get("store_id") != biz["id"]:
+            raise HTTPException(status_code=403, detail="Access denied to this invoice.")
+
+    return inv
+
+
 @router.post("/api/billing/invoices")
 def create_invoice(req: CreateInvoiceRequest, current_user: dict = Depends(get_current_user)):
-    biz = _get_business_for_user(current_user)
-    biz_id = biz["id"]
+    user_role = (current_user.get("role") or "").upper()
+    businesses_col = get_collection("businesses")
+
+    if user_role == ROLE_CUSTOMER:
+        biz_id = req.business_id
+        if not biz_id and req.order_id:
+            order = get_collection("orders").find_one({"id": req.order_id})
+            if order:
+                biz_id = order.get("business_id")
+        if not biz_id:
+            raise HTTPException(status_code=400, detail="Business ID is required.")
+        biz = businesses_col.find_one({"id": biz_id}) or businesses_col.find_one({"slug": biz_id})
+        if not biz:
+            raise HTTPException(status_code=404, detail="Business not found.")
+        biz_id = biz["id"]
+        customer_id = req.customer_id or current_user.get("customer_id") or current_user.get("id")
+    else:
+        biz = _get_business_for_user(current_user)
+        biz_id = biz["id"]
+        customer_id = req.customer_id
+
     invoices_col = get_collection("invoices")
 
     new_id = f"INV-2026-{uuid.uuid4().hex[:6].upper()}"
@@ -153,7 +219,7 @@ def create_invoice(req: CreateInvoiceRequest, current_user: dict = Depends(get_c
         "business_id": biz_id,
         "store_id": biz_id,
         "order_id": req.order_id,
-        "customer_id": req.customer_id,
+        "customer_id": customer_id,
         "customer_name": req.customer_name or "Walk-in Customer",
         "customer_phone": req.customer_phone or "",
         "items": req.items or [],

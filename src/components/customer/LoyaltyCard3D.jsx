@@ -297,7 +297,10 @@ export const LoyaltyCard3D = ({
     );
   }
 
-  const passUrl = `https://app.zoorup.com/customer/${customerId}`;
+  const origin = typeof window !== 'undefined' && window.location?.origin
+    ? window.location.origin
+    : 'https://zoor-up-9b3a3.web.app';
+  const passUrl = `${origin}/customer/${encodeURIComponent(customerId)}`;
   const effectiveRotationY = rotationY;
   const isBackFacing = Math.abs(Math.round(effectiveRotationY / 180) % 2) === 1;
 

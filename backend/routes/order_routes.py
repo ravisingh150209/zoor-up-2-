@@ -242,6 +242,9 @@ def create_order(
         "updated_at": now,
     }
 
+    invoice_id = f"INV-{datetime.now(timezone.utc).year}-{uuid.uuid4().hex[:6].upper()}"
+    order["invoice_id"] = invoice_id
+
     try:
         orders.insert_one(dict(order))
     except Exception:
@@ -249,6 +252,40 @@ def create_order(
         if duplicate and duplicate.get("request_fingerprint") == fingerprint:
             return duplicate
         raise
+
+    # Also persist corresponding invoice in invoices collection for unified billing / payment status
+    invoices = get_collection("invoices")
+    invoice_doc = {
+        "id": invoice_id,
+        "business_id": business_id,
+        "store_id": business_id,
+        "order_id": order_id,
+        "customer_id": customer_id,
+        "customer_name": order["customer_name"],
+        "customer_phone": order["customer_phone"],
+        "items": normalized_lines,
+        "subtotal": float(subtotal),
+        "tax_amount": float(tax),
+        "tax": float(tax),
+        "discount_amount": 0.0,
+        "discount": 0.0,
+        "total_amount": float(total),
+        "total": float(total),
+        "payment_status": "PENDING",
+        "status": "issued",
+        "payment_mode": request.payment_method,
+        "order_type": request.order_type,
+        "table_id": request.table_id,
+        "table_number": table_name,
+        "due_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "created_at": now,
+        "updated_at": now,
+    }
+    try:
+        invoices.insert_one(invoice_doc)
+    except Exception:
+        pass
+
     return order
 
 
@@ -258,16 +295,17 @@ def get_my_orders(
     current_user: dict = Depends(require_role([ROLE_CUSTOMER]))
 ):
     customer_id, _ = _customer_identity(current_user)
-    query = {"customer_id": customer_id}
+    user_id = current_user.get("id")
+    query = {"$or": [{"customer_id": customer_id}, {"customer_id": user_id}, {"customer_user_id": user_id}]}
     if business_id:
-        query["business_id"] = business_id
+        query = {"business_id": business_id, **query}
     return _sorted_orders(get_collection("orders").find(query))
 
 
 @router.get("/orders/{order_id}")
 def get_my_order(order_id: str, current_user: dict = Depends(get_current_user)):
     orders = get_collection("orders")
-    order = orders.find_one({"id": order_id})
+    order = orders.find_one({"id": order_id}) or orders.find_one({"order_id": order_id})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
 
@@ -278,7 +316,12 @@ def get_my_order(order_id: str, current_user: dict = Depends(get_current_user)):
             raise HTTPException(status_code=403, detail="Order access not allowed.")
     elif role == ROLE_CUSTOMER:
         customer_id, _ = _customer_identity(current_user)
-        if order.get("customer_id") != customer_id and order.get("customer_id") != current_user.get("id"):
+        allowed_ids = {customer_id, current_user.get("id"), str(current_user.get("customer_id") or "")}
+        if (
+            order.get("customer_id") not in allowed_ids
+            and order.get("customer_user_id") != current_user.get("id")
+            and order.get("customer_phone") != current_user.get("phone")
+        ):
             raise HTTPException(status_code=403, detail="Order access not allowed.")
 
     return order

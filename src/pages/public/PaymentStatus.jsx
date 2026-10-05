@@ -43,16 +43,41 @@ export const PaymentStatus = () => {
         setError('No payment reference was provided.');
         return;
       }
-      // Search invoice by id
-      const allInvoices = await billingService.getInvoices();
-      let inv = allInvoices.find((i) => i.id === idToLoad || i.order_id === idToLoad);
-      if (!inv && !isProductionEnvironment()) {
-        // Try fallback to localDB
-        const stored = localStorage.getItem('zoorup_invoices');
-        if (stored) {
-          const list = JSON.parse(stored);
-          inv = list.find((i) => i.id === idToLoad || i.order_id === idToLoad);
+
+      let inv = null;
+      let bizId = null;
+
+      // 1. Try authoritative Order API first
+      try {
+        const ord = await orderService.getOrderById(idToLoad);
+        if (ord && (ord.id || ord.order_id)) {
+          inv = {
+            id: ord.invoice_id || ord.id || ord.order_id,
+            order_id: ord.id || ord.order_id,
+            business_id: ord.business_id,
+            customer_name: ord.customer_name,
+            customer_phone: ord.customer_phone,
+            items: ord.items || [],
+            total_amount: ord.total || ord.total_amount || ord.subtotal || 0,
+            payment_mode: ord.payment_method || 'UPI',
+            payment_status: ord.payment_status || 'PENDING',
+            order_type: ord.order_type || 'DINE_IN',
+            table_number: ord.table_number || null,
+          };
+          bizId = ord.business_id;
         }
+      } catch (_) {}
+
+      // 2. Fallback to Billing Invoices API
+      if (!inv) {
+        try {
+          const allInvoices = await billingService.getInvoices();
+          const found = allInvoices.find((i) => i.id === idToLoad || i.order_id === idToLoad);
+          if (found) {
+            inv = found;
+            bizId = found.business_id;
+          }
+        } catch (_) {}
       }
 
       if (!inv) {
@@ -60,17 +85,15 @@ export const PaymentStatus = () => {
         return;
       }
 
-      if (inv) {
-        setInvoice(inv);
-        if (inv.business_id) {
-          const b = await businessService.getBusiness(inv.business_id);
-          setBusiness(b);
-        }
-        if (inv.payment_status === 'PAID') {
-          try {
-            confetti({ particleCount: 70, spread: 70, origin: { y: 0.5 } });
-          } catch (e) {}
-        }
+      setInvoice(inv);
+      if (bizId) {
+        const b = await businessService.getBusiness(bizId);
+        setBusiness(b);
+      }
+      if (inv.payment_status === 'PAID') {
+        try {
+          confetti({ particleCount: 70, spread: 70, origin: { y: 0.5 } });
+        } catch (e) {}
       }
     } catch (err) {
       setError(err.message || 'Payment status could not be loaded from the server.');

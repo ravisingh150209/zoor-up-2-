@@ -494,6 +494,8 @@ export const loyaltyService = {
     if (!authToken) {
       throw new Error('Please log in as a customer to claim rewards.');
     }
+    const cleanBusinessId = typeof businessId === 'string' ? businessId : (businessId?.id || businessId?.business_id || null);
+    const cleanRewardId = typeof rewardId === 'string' ? rewardId : (rewardId?.id || rewardId?.reward_id || rewardId);
     const resp = await fetch(`${API_BASE}/api/customer/rewards/claim`, {
       method: 'POST',
       headers: {
@@ -501,7 +503,7 @@ export const loyaltyService = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
-      body: JSON.stringify({ reward_id: rewardId, business_id: businessId }),
+      body: JSON.stringify({ reward_id: cleanRewardId, business_id: cleanBusinessId }),
     });
     const data = await resp.json().catch(() => ({}));
     if (resp.ok && data.success) {

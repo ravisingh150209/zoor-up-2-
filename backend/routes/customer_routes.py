@@ -635,12 +635,21 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
                     })
                 invites_col.update_one({"id": inv["id"]}, {"$set": {"status": "accepted", "updated_at": datetime.now().isoformat()}})
 
-    connections = cb_col.find({"customer_id": customer_id, "status": "active"})
-    if not connections:
-        connections = cb_col.find({"customer_id": user_id, "status": "active"})
+    all_customer_ids = {customer_id, user_id}
+    if cus_profile.get("id"):
+        all_customer_ids.add(cus_profile["id"])
+    customers_col = get_collection("customers")
+    for c_rec in customers_col.find({"$or": [{"user_id": user_id}, {"email": cus_email}, {"phone": cus_profile.get("phone")}]}):
+        if c_rec.get("customer_id"):
+            all_customer_ids.add(c_rec["customer_id"])
+        if c_rec.get("id"):
+            all_customer_ids.add(c_rec["id"])
+
+    connections = list(cb_col.find({"customer_id": {"$in": list(all_customer_ids)}, "status": "active"}))
+    connected_biz_ids = list({c["business_id"] for c in connections if c.get("business_id")})
 
     # New customer with no businesses connected
-    if not connections:
+    if not connected_biz_ids:
         tier_info = calculate_customer_tier(0)
         return {
             "success": True,
@@ -667,8 +676,7 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
             "offers": []
         }
 
-    # Customer has connected businesses
-    connected_biz_ids = [c["business_id"] for c in connections]
+    # Customer has connected businesses - STRICT ISOLATION: ONLY connected businesses
     businesses_col = get_collection("businesses")
     all_biz = [b for b in businesses_col.find({"status": "ACTIVE"}) if b["id"] in connected_biz_ids]
     if not all_biz:
@@ -952,7 +960,7 @@ def check_in_visit(
 # -----------------------------------------------------------------------------
 class ClaimRewardRequest(BaseModel):
     reward_id: str
-    business_id: Optional[str] = None
+    business_id: Optional[Any] = None
 
 
 DEFAULT_REWARDS = [
@@ -1028,7 +1036,12 @@ def claim_customer_reward(
 ):
     profile = get_customer_profile(current_user)
     cust_id = profile["customer_id"]
-    biz_id = req.business_id
+    
+    biz_id = None
+    if req.business_id and isinstance(req.business_id, str):
+        clean_b = req.business_id.strip()
+        if clean_b and clean_b.lower() not in ("null", "undefined", "none", "{}"):
+            biz_id = clean_b
     
     reward = next((r for r in DEFAULT_REWARDS if r["id"] == req.reward_id), None)
     if not reward:

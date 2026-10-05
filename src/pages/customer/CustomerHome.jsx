@@ -181,11 +181,13 @@ export const CustomerHome = () => {
         const [allRewards, allClaimed, bizOffers] = await Promise.all([
           loyaltyService.getRewards(nextSelectedBusinessId || null),
           loyaltyService.getClaimedRewards(cProfile?.customer_id || customerId),
-          Promise.all(connBiz.map((b) => loyaltyService.getOffers(b.id))),
+          nextSelectedBusinessId
+            ? loyaltyService.getOffers(nextSelectedBusinessId)
+            : (connBiz.length > 0 ? loyaltyService.getOffers(connBiz[0].id) : Promise.resolve([])),
         ]);
         setRewards(allRewards || []);
         setClaimedRewards(allClaimed || []);
-        setOffers(bizOffers.flat().filter((o) => o.active));
+        setOffers(Array.isArray(bizOffers) ? bizOffers.filter((o) => o.active) : []);
 
         notificationService.runReminderEngine(user).catch(() => {});
         return;
@@ -240,8 +242,10 @@ export const CustomerHome = () => {
     if (!selectedRewardForClaim) return;
     setClaiming(true);
     try {
-      const res = await loyaltyService.claimReward(customerId, selectedRewardForClaim.id, customerService);
-      addToast(`🎉 Reward "${selectedRewardForClaim.title}" unlocked! Voucher: ${res.claim.voucher_code}`, 'success');
+      const targetBizId = selectedRewardForClaim.business_id || selectedBusinessId || (businesses.length > 0 ? businesses[0].id : null);
+      const res = await loyaltyService.claimReward(customerId, selectedRewardForClaim.id, targetBizId);
+      const voucherCode = res.voucher_code || res.claim?.code || res.claim?.voucher_code;
+      addToast(`🎉 Reward "${selectedRewardForClaim.title}" unlocked! Voucher: ${voucherCode}`, 'success');
       setSelectedRewardForClaim(null);
 
       // Trigger reward confetti
@@ -416,6 +420,53 @@ export const CustomerHome = () => {
           </Badge>
         </div>
       </div>
+
+      {/* Multi-Store Switcher */}
+      {businesses.length > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', padding: '0.65rem 0.9rem', background: '#FFFFFF', borderRadius: '12px', border: '1px solid #E2E8F0' }}>
+          <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#64748B' }}>
+            🏪 Connected Store:
+          </span>
+          {businesses.map((biz) => {
+            const isSelected = selectedBusinessId === biz.id;
+            return (
+              <button
+                key={biz.id}
+                type="button"
+                onClick={async () => {
+                  setSelectedBusinessId(biz.id);
+                  setBusinessScopeError(null);
+                  try {
+                    const [loyal, rew, off] = await Promise.all([
+                      loyaltyService.getBusinessLoyalty(biz.id),
+                      loyaltyService.getRewards(biz.id),
+                      loyaltyService.getOffers(biz.id)
+                    ]);
+                    setLoyaltyStatus(loyal);
+                    setRewards(rew || []);
+                    setOffers(Array.isArray(off) ? off.filter(o => o.active) : []);
+                  } catch (err) {
+                    setBusinessScopeError(err.message || 'Unable to switch store');
+                  }
+                }}
+                style={{
+                  border: isSelected ? '1.5px solid #1A2B49' : '1px solid #CBD5E1',
+                  background: isSelected ? '#1A2B49' : '#F8FAFC',
+                  color: isSelected ? '#FFFFFF' : '#334155',
+                  padding: '5px 12px',
+                  borderRadius: '8px',
+                  fontSize: '0.78rem',
+                  fontWeight: isSelected ? 700 : 500,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                {biz.name || 'Store'}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* =================================================================
           2. 3D DYNAMIC LOYALTY CARD (SECTION 15, ITEM 2)

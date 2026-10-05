@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { User, Phone, Mail, Award, QrCode, Shield, Save, MapPin, Calendar, CheckCircle2, Sparkles, RefreshCw } from 'lucide-react';
+import { useParams, Link } from 'react-router-dom';
+import { User, Phone, Mail, Award, QrCode, Shield, Save, MapPin, Calendar, CheckCircle2, Sparkles, RefreshCw, ArrowLeft } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Card, CardHeader } from '../../components/ui/Card';
 import { Input } from '../../components/ui/Input';
@@ -12,8 +13,11 @@ import { useToast } from '../../context/ToastContext';
 import { customerService } from '../../services/customerService';
 
 export const CustomerProfile = () => {
+  const { customerId: routeCustomerId } = useParams();
   const { user, refreshUser } = useAuth();
   const { addToast } = useToast();
+
+  const isOwnProfile = !routeCustomerId || (user && (user.customer_id === routeCustomerId || user.id === routeCustomerId));
 
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -29,21 +33,32 @@ export const CustomerProfile = () => {
 
   useEffect(() => {
     loadProfile();
-  }, [user]);
+  }, [user, routeCustomerId]);
 
   const loadProfile = async () => {
-    if (!user) return;
     setLoading(true);
     try {
-      const data = await customerService.getProfile(user);
-      if (data) {
-        setProfile(data);
-        setName(data.name || '');
-        setPhone(data.phone || '');
-        setEmail(data.email || '');
-        setAddress(data.address || '');
-        setBirthday(data.birthday || data.dob || '');
-        setProfileImage(data.profile_image_url || data.avatar || null);
+      if (routeCustomerId && !isOwnProfile) {
+        const passData = await customerService.getCustomerById(routeCustomerId);
+        if (passData) {
+          setProfile(passData);
+          setName(passData.name || '');
+          setPhone(passData.phone || '');
+          setEmail(passData.email || '');
+          setAddress(passData.address || '');
+          setProfileImage(passData.profile_image_url || passData.avatar || null);
+        }
+      } else if (user) {
+        const data = await customerService.getProfile(user);
+        if (data) {
+          setProfile(data);
+          setName(data.name || '');
+          setPhone(data.phone || '');
+          setEmail(data.email || '');
+          setAddress(data.address || '');
+          setBirthday(data.birthday || data.dob || '');
+          setProfileImage(data.profile_image_url || data.avatar || null);
+        }
       }
     } catch (err) {
       console.error('Failed to load profile:', err);

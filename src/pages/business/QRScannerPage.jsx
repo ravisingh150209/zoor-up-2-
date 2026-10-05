@@ -4,6 +4,7 @@ import { Scan, UserCheck, CheckCircle2, ShoppingBag, ArrowRight } from 'lucide-r
 import { QRScannerComponent } from '../../components/qr/QRScannerComponent';
 import { customerService } from '../../services/customerService';
 import { orderService } from '../../services/orderService';
+import { qrService } from '../../services/qrService';
 import { Card, CardHeader } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
@@ -15,13 +16,41 @@ export const QRScannerPage = () => {
   const [scannedEntity, setScannedEntity] = useState(null);
 
   const handleScanDetected = async (code) => {
+    let cleanCode = String(code || '').trim();
+    if (cleanCode.includes('/customer/')) {
+      const parts = cleanCode.split('/customer/');
+      if (parts[1]) {
+        cleanCode = decodeURIComponent(parts[1].split('?')[0].split('#')[0]);
+      }
+    }
+
+    // Try authoritative server-side QR resolution first
+    try {
+      const resolved = await qrService.resolveQR(code);
+      if (resolved && (resolved.valid || resolved.success) && resolved.type === 'customer') {
+        setScannedEntity({
+          type: 'customer',
+          data: {
+            name: resolved.customer_name || 'Customer Member',
+            customer_id: resolved.customer_id,
+            rank: resolved.tier || 'Member',
+            points: resolved.points || 0,
+            total_spent: 0,
+            ...resolved.customer
+          }
+        });
+        addToast(`Customer Identified: ${resolved.customer_name || resolved.customer_id}!`, 'success');
+        return;
+      }
+    } catch (_) {}
+
     // Check if it's a customer ID
-    if (code.startsWith('ZUP-CUS') || code.includes('CUS')) {
+    if (cleanCode.startsWith('ZUP-CUS') || cleanCode.includes('CUS') || cleanCode.length === 36) {
       try {
-        const customer = await customerService.getCustomerById(code);
+        const customer = await customerService.getCustomerById(cleanCode);
         if (customer) {
           setScannedEntity({ type: 'customer', data: customer });
-          addToast(`Customer Identified: ${customer.name}!`, 'success');
+          addToast(`Customer Identified: ${customer.name || customer.customer_name}!`, 'success');
           return;
         }
       } catch (e) {
@@ -30,9 +59,9 @@ export const QRScannerPage = () => {
     }
 
     // Check if it's an order ID
-    if (code.startsWith('ORD-')) {
+    if (cleanCode.startsWith('ORD-') || cleanCode.includes('ORD')) {
       try {
-        const order = await orderService.getOrderById(code);
+        const order = await orderService.getOrderById(cleanCode);
         if (order) {
           setScannedEntity({ type: 'order', data: order });
           addToast(`Order Identified: ${order.id}!`, 'success');

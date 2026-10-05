@@ -29,7 +29,7 @@ import { useToast } from '../../context/ToastContext';
 import { notificationService, NOTIFICATION_TYPES } from '../../services/notificationService';
 
 export const PublicCheckout = () => {
-  const { items, subtotal, clearCart, businessSlug } = useCart();
+  const { items, subtotal, clearCart, businessSlug, businessId } = useCart();
   const { user } = useAuth();
   const { addToast } = useToast();
   const navigate = useNavigate();
@@ -52,26 +52,24 @@ export const PublicCheckout = () => {
 
   useEffect(() => {
     loadBusiness();
-  }, [businessSlug]);
+  }, [businessSlug, businessId, items]);
 
   const loadBusiness = async () => {
     try {
       let b = null;
-      if (businessSlug) {
-        b = await businessService.getBusinessBySlug(businessSlug);
+      const targetBizIdentifier = businessId || items[0]?.business_id || businessSlug;
+      if (targetBizIdentifier) {
+        b = await businessService.getBusinessBySlug(targetBizIdentifier);
         if (!b) {
-          b = await businessService.getBusiness(businessSlug);
+          b = await businessService.getBusiness(targetBizIdentifier);
         }
-      } else {
-        const allBiz = await businessService.getAllBusinesses();
-        if (allBiz.length > 0) b = allBiz[0];
       }
       if (b) {
         setBusiness(b);
         loadBusinessTables(b.id);
       }
     } catch (e) {
-      console.error(e);
+      console.error('Error loading checkout business:', e);
     }
   };
 
@@ -120,10 +118,6 @@ export const PublicCheckout = () => {
       addToast('Customer Name and Mobile Number are required', 'error');
       return;
     }
-    if (appliedDiscount > 0) {
-      addToast('This coupon cannot be verified for server-priced checkout. Remove it and retry.', 'error');
-      return;
-    }
 
     let finalTableNumber = null;
     let finalTableId = null;
@@ -160,23 +154,6 @@ export const PublicCheckout = () => {
         customer_phone: customerPhone.trim(),
       });
 
-      const invoice = await billingService.createInvoice({
-        order_id: order.order_id || order.id,
-        business_id: order.business_id,
-        customer_name: order.customer_name,
-        customer_phone: order.customer_phone,
-        items: order.items,
-        subtotal: order.subtotal,
-        tax_amount: order.tax,
-        discount_amount: order.discount,
-        total_amount: order.total,
-        payment_mode: paymentMethod,
-        payment_status: order.payment_status,
-        order_type: order.order_type,
-        table_id: order.table_id,
-        table_number: order.table_number,
-      });
-
       // Notify business of new in-store purchase
       try {
         notificationService.createNotification({
@@ -191,8 +168,9 @@ export const PublicCheckout = () => {
       } catch (_) {}
 
       clearCart();
-      addToast('Order recorded! Proceeding to payment confirmation...', 'info');
-      navigate(`/payment-status/${invoice.id}`);
+      const orderRef = order.order_id || order.id || order.invoice_id;
+      addToast('Order recorded successfully!', 'success');
+      navigate(`/order-success/${orderRef}`);
     } catch (e) {
       console.error(e);
       addToast(e.message || 'Error placing order', 'error');
