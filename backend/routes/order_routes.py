@@ -80,8 +80,24 @@ def _business_scope(current_user: dict) -> str:
     raise HTTPException(status_code=403, detail="Business order access is not available for this account.")
 
 
+def _normalize_order(order: dict) -> dict:
+    if not isinstance(order, dict):
+        return order
+    meta = order.get("metadata") or {}
+    if not order.get("payment_method") and meta.get("payment_method"):
+        order["payment_method"] = meta.get("payment_method")
+    if not order.get("customer_id") and meta.get("customer_id"):
+        order["customer_id"] = meta.get("customer_id")
+    if not order.get("customer_name") and meta.get("customer_name"):
+        order["customer_name"] = meta.get("customer_name")
+    if not order.get("customer_phone") and meta.get("customer_phone"):
+        order["customer_phone"] = meta.get("customer_phone")
+    return order
+
+
 def _sorted_orders(records):
-    return sorted(records, key=lambda record: record.get("created_at", ""), reverse=True)
+    normalized = [_normalize_order(r) for r in records]
+    return sorted(normalized, key=lambda record: record.get("created_at", ""), reverse=True)
 
 
 @router.post("/orders", status_code=status.HTTP_201_CREATED)
@@ -324,7 +340,7 @@ def get_my_order(order_id: str, current_user: dict = Depends(get_current_user)):
         ):
             raise HTTPException(status_code=403, detail="Order access not allowed.")
 
-    return order
+    return _normalize_order(order)
 
 
 @router.get("/business/orders")
@@ -355,7 +371,7 @@ def get_business_order(order_id: str, current_user: dict = Depends(require_role(
     order = get_collection("orders").find_one({"id": order_id, "business_id": business_id})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
-    return order
+    return _normalize_order(order)
 
 
 @router.patch("/business/orders/{order_id}/status")
