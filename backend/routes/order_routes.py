@@ -312,10 +312,33 @@ def get_my_orders(
 ):
     customer_id, _ = _customer_identity(current_user)
     user_id = current_user.get("id")
-    query = {"$or": [{"customer_id": customer_id}, {"customer_id": user_id}, {"customer_user_id": user_id}]}
+
+    cb_col = get_collection("customer_businesses")
+    all_conn = cb_col.find({"status": "active"}) or []
+    allowed_biz_ids = {
+        c.get("business_id") for c in all_conn
+        if c.get("customer_id") in (customer_id, user_id)
+    }
+
+    orders_col = get_collection("orders")
+    records = orders_col.find({"customer_id": customer_id}) or []
+    seen_ids = {r.get("id") for r in records}
+    if user_id and user_id != customer_id:
+        extra_records = orders_col.find({"customer_id": user_id}) or []
+        for r in extra_records:
+            if r.get("id") not in seen_ids:
+                records.append(r)
+                seen_ids.add(r.get("id"))
+
     if business_id:
-        query = {"business_id": business_id, **query}
-    return _sorted_orders(get_collection("orders").find(query))
+        clean_biz = business_id.strip()
+        records = [r for r in records if r.get("business_id") == clean_biz]
+
+    if allowed_biz_ids:
+        records = [r for r in records if r.get("business_id") in allowed_biz_ids]
+
+    return _sorted_orders(records)
+
 
 
 @router.get("/orders/{order_id}")
