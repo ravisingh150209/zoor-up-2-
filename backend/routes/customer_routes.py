@@ -1065,6 +1065,19 @@ def claim_customer_reward(
             "stamps": 0
         }
     
+    # Prevent duplicate redemption
+    cv_col = get_collection("customer_vouchers")
+    existing_claim = cv_col.find_one({
+        "customer_id": cust_id,
+        "voucher_id": reward["id"],
+        "status": "ACTIVE"
+    })
+    if existing_claim:
+        raise HTTPException(
+            status_code=400,
+            detail="You already have an active claim for this reward. Please redeem your current voucher first."
+        )
+
     pts_required = int(reward.get("points", 0))
     current_pts = int(profile.get("points", 0))
     if current_pts < pts_required:
