@@ -1,6 +1,6 @@
 """
 ZOOR UP Direct UPI Subscription & Payment Routes
-Replaces third-party payment gateways with direct UPI payments (Merchant: 8521893325@ybl).
+Replaces third-party payment gateways with direct UPI payments.
 
 Canonical endpoints:
 - GET  /api/subscriptions/plans (and /api/subscription/plans)
@@ -15,7 +15,6 @@ Canonical endpoints:
 Security & Flow Rules:
 - Server-authoritative plan pricing (FREE = ₹0, STARTER = ₹299, GROWTH = ₹799, PRO = ₹1499)
 - Client sends ONLY plan_id (never trust client-supplied price)
-- Direct UPI deep link format: upi://pay?pa=8521893325@ybl&pn=ZOOR%20UP&am={amount}&cu=INR&tn=ZOOR%20UP%20-%20{PLAN_NAME}
 - URL-encode all dynamic values safely
 - Opening the UPI app starts payment; payment is created with status 'pending' (NEVER falsely marked paid)
 - Subscription is ONLY activated when payment verification confirms success
@@ -37,7 +36,9 @@ router = APIRouter(prefix="/api/subscription", tags=["Subscription"])
 subscriptions_router = APIRouter(prefix="/api/subscriptions", tags=["Subscriptions"])
 
 MERCHANT_BRAND = "ZOOR UP"
-MERCHANT_UPI = "8521893325@ybl"
+# Platform UPI for subscription payments (business pays ZOOR UP platform)
+# Configurable via environment variable; not hardcoded
+PLATFORM_UPI = os.environ.get("PLATFORM_UPI", "8521893325@ybl")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 
 PLAN_PRICING: Dict[str, Dict[str, Any]] = {
@@ -175,13 +176,13 @@ def generate_upi_uri(amount: int, plan_name: str, payment_id: Optional[str] = No
     if payment_id:
         tn_val = f"ZOOR UP - {clean_plan} - {payment_id}"
     params = {
-        "pa": MERCHANT_UPI,
+        "pa": PLATFORM_UPI,
         "pn": MERCHANT_BRAND,
         "am": str(amount),
         "cu": "INR",
         "tn": tn_val
     }
-    encoded_query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    encoded_query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote, safe="@")
     return f"upi://pay?{encoded_query}"
 
 # ==============================================================================
@@ -207,7 +208,7 @@ def handle_get_plans():
     return {
         "success": True,
         "brand": MERCHANT_BRAND,
-        "merchant_upi": MERCHANT_UPI,
+        "merchant_upi": PLATFORM_UPI,
         "currency": "INR",
         "plans": formatted_plans
     }
@@ -265,7 +266,7 @@ def handle_get_current_subscription(business_id: Optional[str], current_user: Op
             "is_paid": not is_free,
             "merchant_info": {
                 "brand": MERCHANT_BRAND,
-                "merchant_upi": MERCHANT_UPI
+                "merchant_upi": PLATFORM_UPI
             }
         }
         res_dict["subscription"] = dict(res_dict)
@@ -302,7 +303,7 @@ def handle_get_current_subscription(business_id: Optional[str], current_user: Op
         "is_paid": not is_free,
         "merchant_info": {
             "brand": MERCHANT_BRAND,
-            "merchant_upi": MERCHANT_UPI
+            "merchant_upi": PLATFORM_UPI
         }
     }
     res_dict["subscription"] = dict(res_dict)
@@ -401,7 +402,7 @@ def handle_payment_initiate(payload: PaymentInitiatePayload, current_user: Optio
         "plan_name": plan_info["name"],
         "amount": amount,
         "currency": "INR",
-        "upi_id": MERCHANT_UPI,
+        "upi_id": PLATFORM_UPI,
         "billing_interval": interval,
         "status": "pending",
         "transaction_reference": payment_id,
@@ -419,7 +420,7 @@ def handle_payment_initiate(payload: PaymentInitiatePayload, current_user: Optio
         "plan_name": plan_info["name"],
         "amount": amount,
         "currency": "INR",
-        "upi_id": MERCHANT_UPI,
+        "upi_id": PLATFORM_UPI,
         "upi_uri": upi_uri
     }
 
@@ -474,7 +475,7 @@ def handle_get_payment_status(payment_id: str, current_user: dict):
         "plan_name": payment.get("plan_name", ""),
         "amount": payment.get("amount", 0),
         "currency": payment.get("currency", "INR"),
-        "upi_id": payment.get("upi_id", MERCHANT_UPI),
+        "upi_id": payment.get("upi_id", PLATFORM_UPI),
         "created_at": payment.get("created_at")
     }
 
@@ -691,7 +692,7 @@ def handle_get_payment_history(business_id: Optional[str], current_user: Optiona
                 "currency": p.get("currency", "INR"),
                 "status": (p.get("status") or "pending").upper(),
                 "payment_method": "upi",
-                "upi_id": p.get("upi_id", MERCHANT_UPI),
+                "upi_id": p.get("upi_id", PLATFORM_UPI),
                 "transaction_reference": p.get("transaction_reference"),
                 "billing_interval": p.get("billing_interval", "monthly")
             }

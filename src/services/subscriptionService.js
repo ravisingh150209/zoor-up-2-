@@ -2,7 +2,7 @@
  * ZOOR UP Direct UPI Subscription Service
  * Direct merchant UPI payment integration:
  * - Brand: ZOOR UP
- * - Merchant UPI: 8521893325@ybl
+ * - Platform UPI: configurable via backend (PLATFORM_UPI env)
  * 
  * Endpoints:
  * - GET  /api/subscriptions/plans
@@ -294,9 +294,9 @@ export const subscriptionService = {
     const info = planPrices[planKey] || planPrices.GROWTH;
     const amount = billingInterval === 'annual' ? info.annual : info.monthly;
 
-    const generateDirectUpiUri = (amt, name, pid) => {
+    const generateDirectUpiUri = (amt, name, pid, platformUpi) => {
       const params = new URLSearchParams({
-        pa: '8521893325@ybl',
+        pa: platformUpi || '8521893325@ybl',
         pn: 'ZOOR UP',
         am: String(amt),
         cu: 'INR',
@@ -339,7 +339,8 @@ export const subscriptionService = {
 
     // Development-only preview; production payments must have a backend record.
     const fallbackPaymentId = `pay_upi_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const fallbackUri = generateDirectUpiUri(amount, info.name);
+    const platformUpi = '8521893325@ybl'; // Fallback platform UPI
+    const fallbackUri = generateDirectUpiUri(amount, info.name, fallbackPaymentId, platformUpi);
     return {
       success: true,
       payment_id: fallbackPaymentId,
@@ -347,7 +348,7 @@ export const subscriptionService = {
       plan_name: info.name,
       amount: amount,
       currency: 'INR',
-      upi_id: '8521893325@ybl',
+      upi_id: platformUpi,
       upi_uri: fallbackUri,
       status: 'pending',
       is_fallback: true

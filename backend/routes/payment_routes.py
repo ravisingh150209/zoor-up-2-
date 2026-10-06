@@ -1,6 +1,6 @@
 """
 ZOOR UP Direct UPI Payment Routes
-Provides direct UPI payments and dynamic UPI deep links (Merchant: 8521893325@ybl).
+Provides direct UPI payments with dynamic UPI deep links per business.
 No third-party payment gateway dependencies.
 """
 import os
@@ -19,7 +19,6 @@ from backend.rate_limit import enforce_rate_limit
 router = APIRouter(prefix="/api/payments", tags=["UPI Payments"])
 
 MERCHANT_BRAND = "ZOOR UP"
-MERCHANT_UPI = "8521893325@ybl"
 
 class DirectUpiPaymentRequest(BaseModel):
     business_id: Optional[str] = None
@@ -32,6 +31,19 @@ class DirectUpiVerifyRequest(BaseModel):
     payment_id: str
     transaction_reference: Optional[str] = None
     utr: Optional[str] = None
+
+def _generate_upi_uri(vpa: str, biz_name: str, amount: float, note: str, order_ref: str) -> str:
+    """Generate UPI intent URI with proper encoding."""
+    params = {
+        "pa": vpa,
+        "pn": biz_name,
+        "am": f"{amount:.2f}",
+        "cu": "INR",
+        "tn": note,
+        "tr": order_ref
+    }
+    encoded_query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote, safe="@")
+    return f"upi://pay?{encoded_query}"
 
 @router.post("/upi/create")
 @router.post("/create")
@@ -64,8 +76,20 @@ def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, cu
             raise HTTPException(status_code=403, detail="This business is not connected to your account.")
 
     order = get_collection("orders").find_one({"id": req.order_id})
-    if not order or order.get("business_id") != business_id or (customer_id and order.get("customer_id") != customer_id):
+    if not order:
+        order = get_collection("orders").find_one({"order_id": req.order_id})
+    if not order:
         raise HTTPException(status_code=404, detail="Order not found for this account.")
+
+    if not business_id:
+        business_id = order.get("business_id")
+    elif order.get("business_id") != business_id:
+        raise HTTPException(status_code=400, detail="Business ID does not match order.")
+
+    if customer_id and order.get("customer_id") != customer_id and order.get("customer_user_id") != current_user.get("id"):
+        raise HTTPException(status_code=403, detail="Order access not allowed.")
+
+    # Backend calculates the authoritative amount from the order
     amount = float(order.get("total_amount") or order.get("total") or 0)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="The order has no payable balance.")
@@ -74,34 +98,30 @@ def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, cu
     now_iso = now.isoformat() + "Z"
     payment_id = f"pay_{int(now.timestamp())}_{secrets.token_hex(4)}"
 
-    # Check business specific UPI ID or fallback to merchant default
-    vpa = MERCHANT_UPI
-    biz_name = MERCHANT_BRAND
-    if business_id:
-        biz = db_instance.businesses.find_one({"id": business_id})
-        if biz:
-            if biz.get("upi_id"):
-                vpa = biz["upi_id"].strip()
-            if biz.get("name"):
-                biz_name = biz["name"].strip()
+    # Fetch saved UPI ID of this exact business from backend
+    biz = get_collection("businesses").find_one({"id": business_id})
+    if not biz:
+        raise HTTPException(status_code=404, detail="Store not found.")
 
-    note = req.notes or f"Payment to {biz_name}"
-    params = {
-        "pa": vpa,
-        "pn": biz_name,
-        "am": f"{amount:.2f}",
-        "cu": "INR",
-        "tn": note
-    }
-    encoded_query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-    upi_uri = f"upi://pay?{encoded_query}"
+    vpa = (biz.get("upi_id") or "").strip()
+    if not vpa:
+        raise HTTPException(
+            status_code=400,
+            detail="This store has not configured a UPI payment ID yet. Please contact the store or choose another payment method."
+        )
+
+    biz_name = (biz.get("upi_name") or biz.get("name") or "Store").strip()
+    order_ref = order.get("order_id") or order.get("id") or req.order_id
+    note = req.notes or f"Payment for Order {order_ref}"
+
+    upi_uri = _generate_upi_uri(vpa, biz_name, amount, note, order_ref)
 
     payment_record = {
         "id": payment_id,
         "payment_id": payment_id,
         "business_id": business_id,
-        "customer_id": customer_id,
-        "order_id": req.order_id,
+        "customer_id": customer_id or order.get("customer_id"),
+        "order_id": order.get("id") or req.order_id,
         "amount": amount,
         "currency": "INR",
         "upi_id": vpa,
@@ -147,7 +167,7 @@ def get_payment_status(payment_id: str, current_user: dict = Depends(get_current
         "status": payment.get("status", "pending"),
         "amount": payment.get("amount", 0),
         "currency": payment.get("currency", "INR"),
-        "upi_id": payment.get("upi_id", MERCHANT_UPI),
+        "upi_id": payment.get("upi_id"),
         "business_id": payment.get("business_id"),
         "created_at": payment.get("created_at")
     }
