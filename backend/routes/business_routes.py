@@ -805,10 +805,12 @@ def update_business_upi(
     if not updated_biz:
         raise HTTPException(status_code=500, detail="Failed to verify UPI settings persistence.")
     
-    # Safely read UPI ID from multiple possible locations (top-level, metadata, or nested payment_settings)
+    # Safely read UPI ID from multiple possible locations.
+    # Priority: metadata (where Supabase update persists) > top-level > payment_settings > vpa
+    # This ensures we read the freshly-updated value, not a stale top-level column.
     saved_upi_id = (
-        updated_biz.get("upi_id") or
         (updated_biz.get("metadata") or {}).get("upi_id") or
+        updated_biz.get("upi_id") or
         (updated_biz.get("payment_settings") or {}).get("upi_id") or
         updated_biz.get("vpa") or
         ""
@@ -822,8 +824,8 @@ def update_business_upi(
         "success": True,
         "business_id": biz["id"],
         "upi_id": saved_upi_id,
-        "upi_name": updated_biz.get("upi_name") or (updated_biz.get("metadata") or {}).get("upi_name") or updates["upi_name"],
-        "upi_notes": updated_biz.get("upi_notes") or (updated_biz.get("metadata") or {}).get("upi_notes") or updates["upi_notes"],
+        "upi_name": (updated_biz.get("metadata") or {}).get("upi_name") or updated_biz.get("upi_name") or updates["upi_name"],
+        "upi_notes": (updated_biz.get("metadata") or {}).get("upi_notes") or updated_biz.get("upi_notes") or updates["upi_notes"],
         "upi_enabled": bool(saved_upi_id),
         "message": "UPI settings saved successfully"
     }
