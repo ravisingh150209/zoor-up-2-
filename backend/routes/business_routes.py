@@ -784,11 +784,12 @@ def update_business_upi(
     businesses_col = get_collection("businesses")
     clean_upi = (req.upi_id or "").strip()
     if clean_upi:
-        upi_regex = r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$"
+        # Allow alphanumeric in provider part (e.g. @ybl, @okaxis, @123, @upi123)
+        upi_regex = r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z0-9]{2,64}$"
         if not re.match(upi_regex, clean_upi):
             raise HTTPException(
                 status_code=400,
-                detail="Invalid UPI ID format. Structure must be name@bank or store@upi (e.g. storename@okaxis)"
+                detail="Invalid UPI ID format. Structure must be handle@provider (e.g. 9817400078@ybl, storename@okaxis)"
             )
     updates = {
         "upi_id": clean_upi,
@@ -798,20 +799,31 @@ def update_business_upi(
         "updated_at": datetime.now().isoformat()
     }
     result = businesses_col.update_one({"id": biz["id"]}, {"$set": updates})
-    if result is False or getattr(result, "matched_count", 0) == 0:
+    if getattr(result, "matched_count", 0) == 0:
         raise HTTPException(status_code=500, detail="Failed to save UPI settings: business not found or update failed.")
     updated_biz = businesses_col.find_one({"id": biz["id"]})
     if not updated_biz:
         raise HTTPException(status_code=500, detail="Failed to verify UPI settings persistence.")
-    saved_upi_id = updated_biz.get("upi_id", "")
-    if clean_upi and saved_upi_id != clean_upi:
-        raise HTTPException(status_code=500, detail="UPI settings not persisted correctly.")
+    
+    # Safely read UPI ID from multiple possible locations (top-level, metadata, or nested payment_settings)
+    saved_upi_id = (
+        updated_biz.get("upi_id") or
+        (updated_biz.get("metadata") or {}).get("upi_id") or
+        (updated_biz.get("payment_settings") or {}).get("upi_id") or
+        updated_biz.get("vpa") or
+        ""
+    ).strip()
+    
+    # Only validate persistence when UPI ID was provided (not when clearing)
+    # Use case-insensitive comparison with trimmed values
+    if clean_upi and saved_upi_id.lower() != clean_upi.lower():
+        raise HTTPException(status_code=500, detail="UPI settings not persisted correctly. Please try again.")
     return {
         "success": True,
         "business_id": biz["id"],
         "upi_id": saved_upi_id,
-        "upi_name": updated_biz.get("upi_name", updates["upi_name"]),
-        "upi_notes": updated_biz.get("upi_notes", updates["upi_notes"]),
+        "upi_name": updated_biz.get("upi_name") or (updated_biz.get("metadata") or {}).get("upi_name") or updates["upi_name"],
+        "upi_notes": updated_biz.get("upi_notes") or (updated_biz.get("metadata") or {}).get("upi_notes") or updates["upi_notes"],
         "upi_enabled": bool(saved_upi_id),
         "message": "UPI settings saved successfully"
     }
