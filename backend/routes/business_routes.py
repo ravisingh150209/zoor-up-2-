@@ -4,6 +4,7 @@ ZOOR UP Business Profile & Onboarding Routes
 import re
 import uuid
 from datetime import datetime
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
 from backend.models import (
@@ -710,6 +711,21 @@ def update_business_profile(
         if len(reward_description) > 300:
             raise HTTPException(status_code=400, detail="Reward description must be 300 characters or fewer.")
         filtered_updates["reward_description"] = reward_description
+
+    if "upi_id" in filtered_updates:
+        raw_upi = str(filtered_updates["upi_id"] or "").strip()
+        if raw_upi:
+            upi_pattern = r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$"
+            if not re.match(upi_pattern, raw_upi):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Please enter a valid UPI ID (e.g. yourstore@okaxis, business@upi)"
+                )
+            filtered_updates["upi_id"] = raw_upi
+            filtered_updates["upi_enabled"] = True
+        else:
+            filtered_updates["upi_id"] = ""
+            filtered_updates["upi_enabled"] = False
     
     # Enforce Gallery Plan Limits
     if "gallery" in filtered_updates and isinstance(filtered_updates["gallery"], list):
@@ -737,6 +753,87 @@ def update_business_profile(
 
     businesses_col.update_one({"id": biz["id"]}, {"$set": filtered_updates})
     return businesses_col.find_one({"id": biz["id"]})
+
+
+class BusinessUpiUpdateRequest(BaseModel):
+    upi_id: str
+    upi_name: Optional[str] = None
+    upi_notes: Optional[str] = "ZOOR UP Store Payment"
+    upi_enabled: Optional[bool] = None
+
+
+@router.get("/business/upi")
+def get_business_upi(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
+    biz = _get_business_for_owner(current_user)
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "upi_id": biz.get("upi_id", ""),
+        "upi_name": biz.get("upi_name", biz.get("name", "")),
+        "upi_notes": biz.get("upi_notes", "ZOOR UP Store Payment"),
+        "upi_enabled": bool(biz.get("upi_id")),
+    }
+
+
+@router.put("/business/upi")
+def update_business_upi(
+    req: BusinessUpiUpdateRequest,
+    current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))
+):
+    biz = _get_business_for_owner(current_user)
+    businesses_col = get_collection("businesses")
+    clean_upi = (req.upi_id or "").strip()
+    if clean_upi:
+        upi_regex = r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$"
+        if not re.match(upi_regex, clean_upi):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid UPI ID format. Structure must be name@bank or store@upi (e.g. storename@okaxis)"
+            )
+    updates = {
+        "upi_id": clean_upi,
+        "upi_name": (req.upi_name or biz.get("name", "Store")).strip(),
+        "upi_notes": (req.upi_notes or "ZOOR UP Store Payment").strip(),
+        "upi_enabled": bool(clean_upi) if req.upi_enabled is None else bool(req.upi_enabled),
+        "updated_at": datetime.now().isoformat()
+    }
+    result = businesses_col.update_one({"id": biz["id"]}, {"$set": updates})
+    if result is False or getattr(result, "matched_count", 0) == 0:
+        raise HTTPException(status_code=500, detail="Failed to save UPI settings: business not found or update failed.")
+    updated_biz = businesses_col.find_one({"id": biz["id"]})
+    if not updated_biz:
+        raise HTTPException(status_code=500, detail="Failed to verify UPI settings persistence.")
+    saved_upi_id = updated_biz.get("upi_id", "")
+    if clean_upi and saved_upi_id != clean_upi:
+        raise HTTPException(status_code=500, detail="UPI settings not persisted correctly.")
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "upi_id": saved_upi_id,
+        "upi_name": updated_biz.get("upi_name", updates["upi_name"]),
+        "upi_notes": updated_biz.get("upi_notes", updates["upi_notes"]),
+        "upi_enabled": bool(saved_upi_id),
+        "message": "UPI settings saved successfully"
+    }
+
+
+@router.get("/public/business/{business_id}/upi")
+@router.get("/public/store/{business_id}/upi")
+def get_public_store_upi(business_id: str):
+    businesses_col = get_collection("businesses")
+    from backend.routes.qr_routes import find_business_by_identifier
+    biz, is_active = find_business_by_identifier(business_id, businesses_col)
+    if not biz:
+        raise HTTPException(status_code=404, detail="Store not found.")
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "business_name": biz.get("name", "Store"),
+        "upi_id": biz.get("upi_id", ""),
+        "upi_name": biz.get("upi_name", biz.get("name", "Store")),
+        "upi_notes": biz.get("upi_notes", "ZOOR UP Store Payment"),
+        "upi_enabled": bool(biz.get("upi_id")),
+    }
 
 @router.get("/onboarding/status")
 def get_onboarding_status(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
