@@ -158,7 +158,7 @@ def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, cu
         "status": "pending"
     }
 
-@router.get("/business/list")
+@router.get("/business")
 def get_business_payments(
     status: Optional[str] = Query(None),
     mode: Optional[str] = Query(None),
@@ -224,7 +224,6 @@ def get_business_payments(
 
 
 @router.get("/upi/{payment_id}")
-@router.get("/{payment_id}")
 def get_payment_status(payment_id: str, current_user: dict = Depends(get_current_user)):
     clean_id = payment_id.strip()
     payment = (
