@@ -159,3 +159,5 @@ When connecting to a live Supabase project, execute `supabase/schema.sql`. The f
 ### Database RPCs:
 1. `award_delivery_loyalty_points(p_order_id TEXT)`: Calculates 10 points per ₹100 upon status transitioning to `DELIVERED`.
 2. `update_customer_rank()`: Automatically updates member tier (Bronze -> Silver -> Gold -> Platinum -> VIP) on points insert/update.
+#   D e p l o y   t r i g g e r  
+ 
