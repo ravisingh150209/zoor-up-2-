@@ -154,7 +154,15 @@ def _normalize_doc(doc: Dict[str, Any], table_name: str = "") -> Dict[str, Any]:
             normalized["customer_id"] = normalized["customer_code"]
         elif isinstance(normalized.get("metadata"), dict) and normalized["metadata"].get("customer_id"):
             normalized["customer_id"] = normalized["metadata"]["customer_id"]
+        if isinstance(normalized.get("metadata"), dict) and normalized["metadata"].get("order_id"):
+            normalized["order_id"] = normalized["metadata"]["order_id"]
+    # Merge metadata fields onto normalized doc so persisted JSONB properties (e.g. upi_id, upi_name) are top-level
+    if isinstance(normalized.get("metadata"), dict):
+        for k, v in normalized["metadata"].items():
+            if k not in normalized or normalized[k] is None or normalized[k] == "":
+                normalized[k] = v
     return normalized
+
 
 
 UUID_TABLES = {"customers", "products", "orders", "payments", "subscriptions", "expenses", "suppliers", "invoices", "messages", "stores"}
@@ -199,6 +207,28 @@ class SupabaseCollection:
                 except Exception:
                     query = query.eq("id", "00000000-0000-0000-0000-000000000000")
                     continue
+
+            # If querying order_id on payments/invoices where order_id is a UUID foreign key
+            if field == "order_id" and self.table_name in ("payments", "invoices") and not _is_valid_uuid(raw_val) and isinstance(raw_val, str):
+                try:
+                    ord_resp = self.client.table("orders").select("id").or_(f"id.eq.{_to_db_uuid(raw_val)},order_id.eq.{raw_val}").limit(1).execute()
+                    if ord_resp.data and ord_resp.data[0].get("id"):
+                        raw_val = ord_resp.data[0]["id"]
+                    else:
+                        raw_val = _to_db_uuid(raw_val)
+                except Exception:
+                    raw_val = _to_db_uuid(raw_val)
+
+            # If querying business_id on invoices/payments where business_id is a UUID foreign key
+            if field == "business_id" and self.table_name in ("invoices", "payments", "orders") and not _is_valid_uuid(raw_val) and isinstance(raw_val, str):
+                try:
+                    biz_resp = self.client.table("businesses").select("id").eq("id", raw_val).limit(1).execute()
+                    if biz_resp.data and biz_resp.data[0].get("id"):
+                        raw_val = biz_resp.data[0]["id"]
+                    else:
+                        raw_val = _to_db_uuid(raw_val)
+                except Exception:
+                    raw_val = _to_db_uuid(raw_val)
 
             if field == "$or":
                 clauses = []
@@ -324,6 +354,20 @@ class SupabaseCollection:
             except Exception:
                 del doc["customer_id"]
 
+        if self.table_name in ("invoices", "orders", "payments") and "order_id" in doc and not _is_valid_uuid(doc["order_id"]):
+            raw_oid = str(doc["order_id"])
+            if "metadata" not in doc or not isinstance(doc["metadata"], dict):
+                doc["metadata"] = {}
+            doc["metadata"]["order_id"] = raw_oid
+            try:
+                ord_resp = self.client.table("orders").select("id").or_(f"id.eq.{_to_db_uuid(raw_oid)},order_id.eq.{raw_oid}").limit(1).execute()
+                if ord_resp.data and ord_resp.data[0].get("id"):
+                    doc["order_id"] = ord_resp.data[0]["id"]
+                else:
+                    doc["order_id"] = _to_db_uuid(raw_oid)
+            except Exception:
+                doc["order_id"] = _to_db_uuid(raw_oid)
+
         # Convert empty string emails/phones to None so PostgreSQL UNIQUE constraints are respected
         if self.table_name in ("users", "customers", "profiles"):
             for field in ("email", "login_email", "phone"):
@@ -344,6 +388,16 @@ class SupabaseCollection:
             if not doc.get("code"):
                 doc["code"] = f"VCH-{uuid.uuid4().hex[:8].upper()}"
 
+        # Auto-pack custom business attributes into metadata JSONB column for PostgreSQL persistence
+        if self.table_name in ("businesses", "stores"):
+            meta_keys = {"upi_id", "upi_name", "upi_notes", "upi_enabled", "menu_enabled", "address", "city", "state", "country", "postal_code"}
+            if any(k in doc for k in meta_keys):
+                if "metadata" not in doc or not isinstance(doc["metadata"], dict):
+                    doc["metadata"] = {}
+                for mk in meta_keys:
+                    if mk in doc:
+                        doc["metadata"][mk] = doc.pop(mk)
+
         while True:
             try:
                 response = self.client.table(self.table_name).insert(doc).execute()
@@ -357,6 +411,16 @@ class SupabaseCollection:
                 if "23505" in err_msg and "customers_customer_id_key" in err_msg and self.table_name == "customers":
                     doc["customer_id"] = f"ZUP-CUS-{secrets.token_hex(4).upper()}"
                     continue
+                if "23503" in err_msg:
+                    if "order_id" in err_msg and "order_id" in doc:
+                        del doc["order_id"]
+                        continue
+                    if "customer_id" in err_msg and "customer_id" in doc:
+                        del doc["customer_id"]
+                        continue
+                    if "store_id" in err_msg and "store_id" in doc:
+                        del doc["store_id"]
+                        continue
                 if "PGRST204" in err_msg or "Could not find the" in err_msg:
                     import re
                     match = re.search(r"Could not find the '([^']+)' column", err_msg)
@@ -364,7 +428,7 @@ class SupabaseCollection:
                         bad_col = match.group(1)
                         if bad_col in doc:
                             val = doc.pop(bad_col)
-                            if bad_col != "metadata":
+                            if bad_col != "metadata" and self.table_name in ("businesses", "stores", "products", "customers", "orders", "profiles", "payments"):
                                 if "metadata" not in doc or not isinstance(doc["metadata"], dict):
                                     doc["metadata"] = {}
                                 doc["metadata"][bad_col] = val
@@ -412,6 +476,23 @@ class SupabaseCollection:
             if "payment_status" in values and isinstance(values["payment_status"], str):
                 values["payment_status"] = values["payment_status"].lower()
 
+        # Map known custom business attributes into metadata JSONB column for PostgreSQL persistence
+        if self.table_name in ("businesses", "stores"):
+            meta_keys = {"upi_id", "upi_name", "upi_notes", "upi_enabled", "menu_enabled", "address", "city", "state", "country", "postal_code"}
+            existing_meta = dict(existing.get("metadata") or {}) if existing and isinstance(existing.get("metadata"), dict) else {}
+            if "metadata" in values and isinstance(values["metadata"], dict):
+                existing_meta.update(values["metadata"])
+            has_meta_updates = False
+            for mk in meta_keys:
+                if mk in values:
+                    existing_meta[mk] = values.pop(mk)
+                    has_meta_updates = True
+            if has_meta_updates:
+                values["metadata"] = existing_meta
+
+        if not values:
+            return UpdateResult(1, 0)
+
         if upsert and not existing:
             new_doc = {}
             for field, val in (filter_dict or {}).items():
@@ -448,7 +529,15 @@ class SupabaseCollection:
                     if match:
                         bad_col = match.group(1)
                         if bad_col in values:
-                            values.pop(bad_col)
+                            val = values.pop(bad_col)
+                            if bad_col != "metadata" and self.table_name in ("businesses", "stores", "products", "customers", "orders", "profiles"):
+                                existing_meta = dict(existing.get("metadata") or {}) if existing and isinstance(existing.get("metadata"), dict) else {}
+                                if "metadata" in values and isinstance(values["metadata"], dict):
+                                    existing_meta.update(values["metadata"])
+                                existing_meta[bad_col] = val
+                                values["metadata"] = existing_meta
+                            if not values:
+                                return UpdateResult(1, 0)
                             continue
                 raise
 

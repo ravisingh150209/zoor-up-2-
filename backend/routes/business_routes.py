@@ -83,21 +83,43 @@ def _calculate_customer_rank(points: int) -> str:
 def get_business_dashboard(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
     biz = _get_business_for_owner(current_user)
     business_id = biz["id"]
-    orders = get_collection("orders").find({"business_id": business_id})
-    products = get_collection("products").find({"business_id": business_id})
-    connections = get_collection("customer_businesses").find({"business_id": business_id, "status": "active"})
-    loyalty_records = get_collection("loyalty").find({"business_id": business_id})
-    expenses = get_collection("expenses").find({"business_id": business_id})
-    vouchers = get_collection("vouchers").find({"business_id": business_id})
-
+    
+    # Use database-side filtering with limits to avoid loading all records
+    # For stats, we only need recent data (last 90 days) and aggregates
+    from datetime import timedelta
+    ninety_days_ago = (datetime.now() - timedelta(days=90)).isoformat()
     today = datetime.now().date().isoformat()
-    today_orders = [order for order in orders if str(order.get("created_at", "")).startswith(today)]
-    paid_orders = [order for order in orders if str(order.get("payment_status", "")).upper() == "PAID"]
+    this_month = today[:7]
+    
+    # Orders - only last 90 days for chart, but all for total revenue
+    orders_col = get_collection("orders")
+    # Get recent orders for chart (last 90 days)
+    recent_orders = list(orders_col.find({
+        "business_id": business_id,
+        "created_at": {"$gte": ninety_days_ago}
+    }).sort("created_at", -1))
+    
+    # Get today's orders
+    today_orders = [o for o in recent_orders if str(o.get("created_at", "")).startswith(today)]
+    
+    # Get all paid orders for total revenue (use index on payment_status)
+    paid_orders = list(orders_col.find({
+        "business_id": business_id,
+        "payment_status": "PAID"
+    }))
+    
+    # Other collections
+    products = list(get_collection("products").find({"business_id": business_id}))
+    connections = list(get_collection("customer_businesses").find({"business_id": business_id, "status": "active"}))
+    loyalty_records = list(get_collection("loyalty").find({"business_id": business_id}))
+    expenses = list(get_collection("expenses").find({"business_id": business_id}))
+    vouchers = list(get_collection("vouchers").find({"business_id": business_id}))
+    
     total_revenue = sum(float(order.get("total", 0) or 0) for order in paid_orders)
     total_expense = sum(float(expense.get("amount", 0) or 0) for expense in expenses)
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     chart = {day: {"sales": 0, "orders": 0} for day in day_names}
-    for order in orders:
+    for order in recent_orders:
         try:
             created_at = datetime.fromisoformat(str(order.get("created_at", "")).replace("Z", "+00:00"))
             day = day_names[created_at.weekday()]
@@ -123,9 +145,9 @@ def get_business_dashboard(current_user: dict = Depends(require_role([ROLE_BUSIN
             "todaySales": sum(float(order.get("total", 0) or 0) for order in today_orders if str(order.get("payment_status", "")).upper() == "PAID"),
             "todayOrdersCount": len(today_orders),
             "totalCustomers": len({connection.get("customer_id") for connection in connections}),
-            "newCustomers": sum(str(connection.get("created_at", "")).startswith(today[:7]) for connection in connections),
-            "pendingOrders": sum(str(order.get("status", "")).upper() in {"NEW", "CONFIRMED", "PREPARING"} for order in orders),
-            "completedOrders": sum(str(order.get("status", "")).upper() in {"COMPLETED", "DELIVERED"} for order in orders),
+            "newCustomers": sum(str(connection.get("created_at", "")).startswith(this_month) for connection in connections),
+            "pendingOrders": sum(str(order.get("status", "")).upper() in {"NEW", "CONFIRMED", "PREPARING"} for order in recent_orders),
+            "completedOrders": sum(str(order.get("status", "")).upper() in {"COMPLETED", "DELIVERED"} for order in recent_orders),
             "lowStockCount": sum(product.get("type") == "product" and int(product.get("stock", 0) or 0) <= 5 for product in products),
             "totalRevenue": total_revenue,
             "totalExpense": total_expense,
@@ -141,20 +163,133 @@ def get_business_dashboard(current_user: dict = Depends(require_role([ROLE_BUSIN
     }
 
 
+@router.get("/business/analytics")
+def get_business_analytics(
+    range: str = "7D",
+    current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))
+):
+    biz = _get_business_for_owner(current_user)
+    business_id = biz["id"]
+    
+    from datetime import timedelta
+    now = datetime.now()
+    if range == "24H":
+        start_date = (now - timedelta(hours=24)).isoformat()
+        day_names = [str((now - timedelta(hours=i)).hour) + ":00" for i in range(23, -1, -1)]
+    elif range == "7D":
+        start_date = (now - timedelta(days=7)).isoformat()
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    elif range == "30D":
+        start_date = (now - timedelta(days=30)).isoformat()
+        day_names = [str(i) for i in range(1, 31)]
+    elif range == "1Y":
+        start_date = (now - timedelta(days=365)).isoformat()
+        day_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    else:
+        start_date = (now - timedelta(days=7)).isoformat()
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    
+    orders_col = get_collection("orders")
+    recent_orders = list(orders_col.find({
+        "business_id": business_id,
+        "created_at": {"$gte": start_date}
+    }).sort("created_at", -1))
+    
+    products = list(get_collection("products").find({"business_id": business_id}))
+    connections = list(get_collection("customer_businesses").find({"business_id": business_id, "status": "active"}))
+    loyalty_records = list(get_collection("loyalty").find({"business_id": business_id}))
+    expenses = list(get_collection("expenses").find({"business_id": business_id}))
+    vouchers = list(get_collection("vouchers").find({"business_id": business_id}))
+    
+    paid_orders = [o for o in recent_orders if str(o.get("payment_status", "")).upper() == "PAID"]
+    total_revenue = sum(float(order.get("total", 0) or 0) for order in paid_orders)
+    total_expense = sum(float(expense.get("amount", 0) or 0) for expense in expenses)
+    
+    chart = {day: {"sales": 0, "orders": 0} for day in day_names}
+    for order in recent_orders:
+        try:
+            created_at = datetime.fromisoformat(str(order.get("created_at", "")).replace("Z", "+00:00"))
+            if range in ("24H", "7D"):
+                day = day_names[created_at.weekday()] if range == "7D" else str(created_at.hour) + ":00"
+            elif range == "30D":
+                day = str(created_at.day)
+            else:
+                day = day_names[created_at.month - 1]
+            if day in chart:
+                chart[day]["orders"] += 1
+                if str(order.get("payment_status", "")).upper() == "PAID":
+                    chart[day]["sales"] += float(order.get("total", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    
+    category_counts = {}
+    for product in products:
+        category = product.get("category") or "General"
+        category_counts[category] = category_counts.get(category, 0) + 1
+    colors = ["#6366f1", "#10b981", "#f59e0b", "#06b6d4", "#ec4899", "#8b5cf6"]
+    category_distribution = [
+        {"name": category, "percentage": round(count / len(products) * 100), "color": colors[index % len(colors)]}
+        for index, (category, count) in enumerate(category_counts.items())
+    ] if products else []
+    
+    return {
+        "business": biz,
+        "range": range,
+        "stats": {
+            "todaySales": sum(float(order.get("total", 0) or 0) for order in recent_orders if str(order.get("created_at", "")).startswith(now.date().isoformat()) and str(order.get("payment_status", "")).upper() == "PAID"),
+            "todayOrdersCount": len([o for o in recent_orders if str(o.get("created_at", "")).startswith(now.date().isoformat())]),
+            "totalCustomers": len({connection.get("customer_id") for connection in connections}),
+            "newCustomers": sum(1 for connection in connections if str(connection.get("created_at", "")).startswith(now.date().isoformat()[:7])),
+            "pendingOrders": sum(1 for order in recent_orders if str(order.get("status", "")).upper() in {"NEW", "CONFIRMED", "PREPARING"}),
+            "completedOrders": sum(1 for order in recent_orders if str(order.get("status", "")).upper() in {"COMPLETED", "DELIVERED"}),
+            "lowStockCount": sum(1 for product in products if product.get("type") == "product" and int(product.get("stock", 0) or 0) <= 5),
+            "totalRevenue": total_revenue,
+            "totalExpense": total_expense,
+            "netProfit": max(0, total_revenue - total_expense),
+            "totalPointsIssued": sum(int(record.get("points", 0) or 0) for record in loyalty_records),
+            "activeOffersCount": sum(1 for voucher in vouchers if str(voucher.get("status", "ACTIVE")).upper() == "ACTIVE"),
+            "subscriptionPlan": biz.get("subscription_plan", "FREE"),
+        },
+        "charts": {
+            "salesChart": [{"day": day, **chart[day]} for day in day_names],
+            "categoryDistribution": category_distribution,
+        },
+    }
+
+
 @router.get("/business/customers")
 def list_connected_business_customers(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
     biz = _get_business_for_owner(current_user)
     target = _business_stamp_target(biz)
-    connections = get_collection("customer_businesses").find({"business_id": biz["id"], "status": "active"})
+    connections = list(get_collection("customer_businesses").find({"business_id": biz["id"], "status": "active"}))
+    
+    if not connections:
+        return {"success": True, "business_id": biz["id"], "customers": []}
+    
+    # Bulk fetch all customers and loyalty records in one query each
+    customer_ids = [c.get("customer_id") for c in connections if c.get("customer_id")]
     customers_col = get_collection("customers")
     loyalty_col = get_collection("loyalty")
+    
+    # Bulk fetch customers
+    customers = list(customers_col.find({"customer_id": {"$in": customer_ids}}))
+    customer_map = {c.get("customer_id"): c for c in customers}
+    
+    # Bulk fetch loyalty records
+    loyalty_records = list(loyalty_col.find({"customer_id": {"$in": customer_ids}, "business_id": biz["id"]}))
+    loyalty_map = {l.get("customer_id"): l for l in loyalty_records}
+    
     result = []
     for connection in connections:
         customer_id = connection.get("customer_id")
-        customer = customers_col.find_one({"customer_id": customer_id}) or customers_col.find_one({"user_id": customer_id})
+        customer = customer_map.get(customer_id)
         if not customer:
-            continue
-        loyalty = loyalty_col.find_one({"customer_id": customer_id, "business_id": biz["id"]}) or {}
+            # Fallback to user_id lookup
+            customer = customers_col.find_one({"user_id": customer_id})
+            if not customer:
+                continue
+        
+        loyalty = loyalty_map.get(customer_id) or {}
         stamps = int(loyalty.get("stamps", 0))
         result.append({
             "id": customer.get("id"),
