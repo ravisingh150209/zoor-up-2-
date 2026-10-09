@@ -161,4 +161,5 @@ When connecting to a live Supabase project, execute `supabase/schema.sql`. The f
 2. `update_customer_rank()`: Automatically updates member tier (Bronze -> Silver -> Gold -> Platinum -> VIP) on points insert/update.
 #   D e p l o y   t r i g g e r  
     
+    
  
