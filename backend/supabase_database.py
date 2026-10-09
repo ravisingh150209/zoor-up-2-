@@ -219,28 +219,15 @@ class SupabaseCollection:
                 except Exception:
                     raw_val = _to_db_uuid(raw_val)
 
-            # If querying business_id on invoices/payments where business_id is a UUID foreign key
+            # If querying business_id on invoices/payments/orders where business_id is a string FK (biz_xxx)
+            # The businesses table uses string id (biz_xxx) as PK, not UUID.
+            # Other tables (orders, invoices, payments) store business_id as the same string.
+            # No UUID conversion needed - just use the string directly.
             if field == "business_id" and self.table_name in ("invoices", "payments", "orders") and not _is_valid_uuid(raw_val) and isinstance(raw_val, str):
-                resolved_uuid = None
-                # Try multiple columns that may store the string business identifier (biz_xxx)
-                # businesses table may have UUID id PK with business_id/slug storing the string key
-                for lookup_col in ("business_id", "id", "slug"):
-                    try:
-                        biz_resp = self.client.table("businesses").select("id").eq(lookup_col, raw_val).limit(1).execute()
-                        if biz_resp.data and biz_resp.data[0].get("id"):
-                            candidate = biz_resp.data[0]["id"]
-                            if _is_valid_uuid(candidate):
-                                resolved_uuid = candidate
-                                break
-                    except Exception as e:
-                        err_msg = str(e)
-                        # Safe diagnostic logging - no secrets
-                        print(f"[DB] business_id lookup failed table=businesses column={lookup_col} value={raw_val} error={type(e).__name__} code={err_msg[:100]}")
-                        continue
-                if resolved_uuid:
-                    raw_val = resolved_uuid
-                else:
-                    raw_val = _to_db_uuid(raw_val)
+                # The business_id in these tables is already the canonical string (biz_xxx).
+                # No lookup or conversion needed - the string is the actual FK value.
+                # Keep raw_val as-is for the query.
+                pass
 
             if field == "$or":
                 clauses = []
