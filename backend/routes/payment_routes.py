@@ -176,7 +176,19 @@ def get_business_payments(
     sort_dir: Optional[str] = Query("desc"),
     current_user: dict = Depends(get_current_user),
 ):
-    """Returns all payments for the authenticated business owner's business."""
+    """
+    Returns all deduplicated payments and authoritative financial summary
+    strictly belonging to the authenticated business.
+    """
+    # Handle direct function invocations where default parameter may be Query object
+    status = status if isinstance(status, str) else None
+    mode = mode if isinstance(mode, str) else None
+    search = search if isinstance(search, str) else None
+    date_from = date_from if isinstance(date_from, str) else None
+    date_to = date_to if isinstance(date_to, str) else None
+    sort_by = sort_by if isinstance(sort_by, str) else "created_at"
+    sort_dir = sort_dir if isinstance(sort_dir, str) else "desc"
+
     role = (current_user.get("role") or "").upper()
     if role not in (ROLE_BUSINESS_OWNER, ROLE_SUPER_ADMIN, ROLE_STAFF):
         raise HTTPException(status_code=403, detail="Business owner access required.")
@@ -188,24 +200,75 @@ def get_business_payments(
         raise HTTPException(status_code=404, detail="Business not found.")
 
     biz_id = biz["id"]
-    payments_col = db_instance.payments
+    payments_col = get_collection("payments")
 
-    query = {"business_id": biz_id}
-    if status and status != "ALL":
-        query["status"] = status.lower()
+    # Authoritative query strictly bound to the authenticated business
+    raw_payments = list(payments_col.find({"business_id": biz_id}))
 
-    all_payments = payments_col.find(query)
+    # Deduplicate payment records by canonical transaction identifier
+    deduped_payments = []
+    seen_ids = set()
+    for p in raw_payments:
+        pid = p.get("payment_id") or p.get("id") or p.get("razorpay_order_id") or p.get("transaction_reference")
+        if pid and pid in seen_ids:
+            continue
+        if pid:
+            seen_ids.add(pid)
+        deduped_payments.append(p)
 
-    for p in all_payments:
-        # Determine normalized display mode
+    # Calculate authoritative summary metrics across all deduplicated records of this business:
+    # 1. Total Customer Order Revenue: strictly orders with status 'paid' or 'completed'.
+    #    Pending, failed, and refunded payments are strictly EXCLUDED.
+    # 2. Pending Payments: total amount of pending payments.
+    # 3. Subscription Revenue: strictly business subscriptions with status 'paid' or 'completed'.
+    # 4. Total Transactions: count of unique transactions.
+    total_revenue = 0.0
+    pending_payments = 0.0
+    subscription_revenue = 0.0
+    total_transactions = len(deduped_payments)
+
+    for p in deduped_payments:
+        amt = float(p.get("amount") or 0.0)
+        st = str(p.get("status") or "").lower().strip()
+        is_sub = (
+            p.get("payment_type") == "BUSINESS_SUBSCRIPTION"
+            or (p.get("plan_id") is not None and not p.get("order_id"))
+        )
+        if st in ("paid", "completed"):
+            if is_sub:
+                subscription_revenue += amt
+            else:
+                total_revenue += amt
+        elif st == "pending":
+            pending_payments += amt
+
+    # Filter and format payment records according to user criteria
+    results = []
+    for p in deduped_payments:
+        st = str(p.get("status") or "").lower().strip()
         is_razorpay = (p.get("payment_method") or "").upper() == "RAZORPAY" or p.get("mode") in ("test", "live")
-        if p.get("plan_id"):
+        is_sub = (
+            p.get("payment_type") == "BUSINESS_SUBSCRIPTION"
+            or (p.get("plan_id") is not None and not p.get("order_id"))
+        )
+
+        plan_display = str(p.get("plan_name") or p.get("plan_id") or "Plan").capitalize()
+        if is_sub:
             display_mode = "SUBSCRIPTION"
+            purpose = f"{plan_display} Subscription"
         elif is_razorpay:
             display_mode = "ONLINE"
+            purpose = f"Order #{p.get('order_id') or '-'}"
         else:
             display_mode = (p.get("payment_mode") or p.get("mode") or "UPI").upper()
+            purpose = f"Order #{p.get('order_id') or '-'}"
 
+        # Status filter
+        if status and status != "ALL":
+            if st != status.lower():
+                continue
+
+        # Mode filter
         if mode and mode != "ALL":
             target_mode = mode.upper()
             if target_mode in ("ONLINE", "CARD") and is_razorpay:
@@ -213,33 +276,56 @@ def get_business_payments(
             elif target_mode != display_mode and target_mode != (p.get("payment_method") or "").upper():
                 continue
 
+        # Search filter
         if search:
-            q = search.lower()
+            q = search.lower().strip()
             found = False
-            for field in ["payment_id", "id", "order_id", "transaction_reference", "customer_name", "customer_phone", "plan_id", "razorpay_order_id", "razorpay_payment_id"]:
+            for field in [
+                "payment_id", "id", "order_id", "transaction_reference",
+                "customer_name", "customer_phone", "plan_id", "plan_name",
+                "razorpay_order_id", "razorpay_payment_id"
+            ]:
                 val = str(p.get(field) or "").lower()
                 if q in val:
                     found = True
                     break
             if not found:
                 continue
-        if date_from:
-            if p.get("created_at") and p["created_at"] < date_from:
+
+        # Date range filter
+        p_created = str(p.get("created_at") or "")
+        if date_from and p_created:
+            if p_created < date_from:
                 continue
-        if date_to:
-            if p.get("created_at") and p["created_at"] > date_to + "T23:59:59":
+        if date_to and p_created:
+            if p_created > date_to + "T23:59:59":
                 continue
 
         p_copy = dict(p)
         p_copy["mode"] = display_mode
-        p_copy["customer_name"] = p.get("customer_name") or "Walk-in"
+        p_copy["purpose"] = purpose
+        p_copy["is_subscription"] = is_sub
+        p_copy["customer_name"] = p.get("customer_name") or (f"{biz.get('name', 'Business')} Owner" if is_sub else "Walk-in Customer")
         results.append(p_copy)
 
+    # Sort
     sort_key = sort_by if sort_by in ["created_at", "amount", "status", "payment_id"] else "created_at"
     reverse = sort_dir == "desc"
-    results.sort(key=lambda x: str(x.get(sort_key) or ""), reverse=reverse)
+    if sort_key == "amount":
+        results.sort(key=lambda x: float(x.get("amount") or 0.0), reverse=reverse)
+    else:
+        results.sort(key=lambda x: str(x.get(sort_key) or ""), reverse=reverse)
 
-    return {"payments": results}
+    return {
+        "payments": results,
+        "summary": {
+            "total_revenue": round(total_revenue, 2),
+            "pending_payments": round(pending_payments, 2),
+            "subscription_revenue": round(subscription_revenue, 2),
+            "total_transactions": total_transactions,
+            "filtered_count": len(results),
+        }
+    }
 
 
 @router.get("/upi/{payment_id}")

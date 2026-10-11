@@ -22,13 +22,16 @@ export const paymentService = {
       });
       if (!resp.ok) throw new Error('Failed to load payments');
       const data = await resp.json();
-      return data.payments || data || [];
+      return {
+        payments: Array.isArray(data.payments) ? data.payments : (Array.isArray(data) ? data : []),
+        summary: data.summary || null,
+      };
     } catch (e) {
       if (isProductionEnvironment()) throw e;
       console.warn('[PAYMENTS] API fetch failed, falling back to localDB in dev', e);
     }
 
-    if (!businessId) return [];
+    if (!businessId) return { payments: [], summary: null };
     let list = localDB.getPayments?.() || localDB.getTableBookings?.() || [];
 
     if (filters.status && filters.status !== 'ALL') {
@@ -61,7 +64,7 @@ export const paymentService = {
       return sortDir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
     });
 
-    return list;
+    return { payments: list, summary: null };
   },
 
   getPaymentById: async (paymentId) => {
