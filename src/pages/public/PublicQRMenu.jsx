@@ -28,6 +28,8 @@ import { Button } from '../../components/ui/Button';
 import { LoadingState } from '../../components/ui/States';
 import { ZoorUpLogo } from '../../components/ui/ZoorUpLogo';
 import { useToast } from '../../context/ToastContext';
+import { SocialLinksBar } from '../../components/ui/SocialIcons';
+import { Avatar } from '../../components/ui/Avatar';
 
 import { API_BASE_URL as API_BASE } from '../../config/api.js';
 
@@ -356,43 +358,16 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
           alignItems: 'center',
         }}
       >
-        {businessLogo ? (
-          <img
-            src={businessLogo}
-            alt={business.name}
-            style={{
-              width: '68px',
-              height: '68px',
-              borderRadius: '16px',
-              objectFit: 'cover',
-              border: '2px solid #FFFFFF',
-              boxShadow: '0 4px 10px rgba(0, 0, 0, 0.08)',
-              flexShrink: 0,
-            }}
-            onError={(e) => {
-              e.currentTarget.style.display = 'none';
-            }}
-          />
-        ) : (
-          <div
-            style={{
-              width: '68px',
-              height: '68px',
-              borderRadius: '16px',
-              background: '#FEF3C7',
-              color: '#D97706',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontWeight: 800,
-              fontSize: '1.5rem',
-              flexShrink: 0,
-              border: '1px solid #FDE68A',
-            }}
-          >
-            {business.name?.charAt(0) || 'S'}
-          </div>
-        )}
+        <Avatar
+          src={businessLogo}
+          name={business.name || 'Store'}
+          size="xl"
+          style={{
+            border: '2px solid #FFFFFF',
+            boxShadow: '0 4px 10px rgba(0, 0, 0, 0.08)',
+            flexShrink: 0,
+          }}
+        />
 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -408,6 +383,17 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
             <p style={{ color: '#94A3B8', fontSize: '0.72rem', margin: '2px 0 0', display: 'flex', alignItems: 'center', gap: '4px' }}>
               <MapPin size={12} /> {business.address}
             </p>
+          )}
+
+          {business.social_links && (
+            <div style={{ marginTop: '0.65rem' }}>
+              <SocialLinksBar
+                socialLinks={business.social_links}
+                businessName={business.name}
+                variant="colored"
+                size="sm"
+              />
+            </div>
           )}
         </div>
       </div>

@@ -28,6 +28,8 @@ import { Badge } from '../../components/ui/Badge';
 import { Card } from '../../components/ui/Card';
 import { LoadingState } from '../../components/ui/States';
 import { ZoorUpLogo } from '../../components/ui/ZoorUpLogo';
+import { Avatar } from '../../components/ui/Avatar';
+import { SocialLinksBar } from '../../components/ui/SocialIcons';
 import { PublicQRMenu } from './PublicQRMenu';
 
 export const PublicBusinessHub = () => {
@@ -222,31 +224,16 @@ export const PublicBusinessHub = () => {
         {/* Business Header Card */}
         <Card style={{ padding: '1.25rem', border: '1px solid var(--border-color)', boxShadow: '0 10px 25px rgba(0,0,0,0.06)' }}>
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-            <div style={{
-              width: '74px',
-              height: '74px',
-              borderRadius: '16px',
-              border: '3px solid #FFFFFF',
-              background: '#FFFFFF',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
-              overflow: 'hidden',
-              flexShrink: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              {business.logo ? (
-                <img
-                  src={business.logo}
-                  alt={business.name}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  loading="lazy"
-                  decoding="async"
-                />
-              ) : (
-                <Store size={36} color="#1A2B49" />
-              )}
-            </div>
+            <Avatar
+              src={business.logo || business.logo_url}
+              name={business.name || 'Store'}
+              size="xl"
+              style={{
+                border: '3px solid #FFFFFF',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+                flexShrink: 0,
+              }}
+            />
 
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -288,6 +275,16 @@ export const PublicBusinessHub = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Phone size={14} style={{ flexShrink: 0 }} />
                 <a href={`tel:${business.phone}`} style={{ color: 'inherit', textDecoration: 'none' }}>{business.phone}</a>
+              </div>
+            )}
+            {business.social_links && (
+              <div style={{ marginTop: '0.65rem' }}>
+                <SocialLinksBar
+                  socialLinks={business.social_links}
+                  businessName={business.name}
+                  variant="colored"
+                  size="sm"
+                />
               </div>
             )}
           </div>

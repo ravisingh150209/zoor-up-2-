@@ -609,6 +609,7 @@ class RazorpayFailureRequest(BaseModel):
 
 
 @router.post("/razorpay/create")
+@router.post("/razorpay/create-order")
 def create_razorpay_order(req: RazorpayOrderRequest, request: Request, current_user: dict = Depends(get_current_user)):
     """
     Creates a Razorpay order for the given order.
@@ -641,8 +642,12 @@ def create_razorpay_order(req: RazorpayOrderRequest, request: Request, current_u
         customer = get_collection("customers").find_one({"user_id": current_user["id"]})
         if not customer:
             raise HTTPException(status_code=403, detail="Customer profile could not be verified.")
-        customer_id = customer.get("customer_id")
-        if business_id and not get_collection("customer_businesses").find_one({"customer_id": customer_id, "business_id": business_id, "status": "active"}):
+        customer_id = customer.get("customer_id") or customer.get("id")
+        is_conn = (
+            get_collection("customer_businesses").find_one({"customer_id": customer_id, "business_id": business_id, "status": "active"}) or
+            get_collection("customer_businesses").find_one({"customer_id": current_user["id"], "business_id": business_id, "status": "active"})
+        )
+        if business_id and not is_conn:
             raise HTTPException(status_code=403, detail="This business is not connected to your account.")
     
     order = get_collection("orders").find_one({"id": req.order_id})
@@ -694,7 +699,7 @@ def verify_razorpay_payment_route(req: RazorpayVerifyRequest, current_user: dict
     if role == ROLE_CUSTOMER:
         customer = get_collection("customers").find_one({"user_id": current_user["id"]})
         if customer:
-            customer_id = customer.get("customer_id")
+            customer_id = customer.get("customer_id") or customer.get("id")
     
     try:
         result = verify_razorpay_payment(

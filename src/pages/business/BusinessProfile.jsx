@@ -1,6 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Store, MapPin, Clock, ExternalLink, Save, Phone, Mail, Globe, CheckCircle2, Image as ImageIcon, CreditCard, ToggleLeft, ToggleRight, Shield } from 'lucide-react';
+import {
+  Store,
+  MapPin,
+  Clock,
+  ExternalLink,
+  Save,
+  Phone,
+  Mail,
+  Globe,
+  CheckCircle2,
+  Image as ImageIcon,
+  CreditCard,
+  ToggleLeft,
+  ToggleRight,
+  Shield,
+  MessageSquare,
+  X,
+  Check,
+  Loader2,
+  Sparkles,
+  RefreshCw,
+} from 'lucide-react';
+import {
+  InstagramIcon,
+  FacebookIcon,
+  WhatsAppIcon,
+  YouTubeIcon,
+  LinkedInIcon,
+  WebsiteIcon,
+  SocialLinksBar,
+} from '../../components/ui/SocialIcons';
+import { Avatar } from '../../components/ui/Avatar';
 import { businessService } from '../../services/businessService';
 import { uploadService } from '../../services/uploadService';
 import { Input } from '../../components/ui/Input';
@@ -27,6 +58,17 @@ export const BusinessProfile = () => {
     upi_enabled: false,
   });
   const [upiLoaded, setUpiLoaded] = useState(false);
+  const [socialLinks, setSocialLinks] = useState({
+    instagram: '',
+    facebook: '',
+    whatsapp: '',
+    whatsapp_message: '',
+    website: '',
+    youtube: '',
+    linkedin: '',
+  });
+  const [socialLoading, setSocialLoading] = useState(false);
+  const [socialSaving, setSocialSaving] = useState(false);
 
   useEffect(() => {
     loadProfile();
@@ -94,24 +136,73 @@ export const BusinessProfile = () => {
       console.error('Failed to load UPI settings:', e);
     } finally {
       setUpiLoaded(true);
+}
+  };
+
+  const loadSocialLinks = async () => {
+    if (!user?.business_id) return;
+    setSocialLoading(true);
+    try {
+      const data = await businessService.getBusinessSocialLinks(user?.business_id);
+      if (data && data.success) {
+        setSocialLinks({
+          instagram: data.social_links?.instagram || '',
+          facebook: data.social_links?.facebook || '',
+          whatsapp: data.social_links?.whatsapp || '',
+          whatsapp_message: data.social_links?.whatsapp_message || '',
+          website: data.social_links?.website || '',
+          youtube: data.social_links?.youtube || '',
+          linkedin: data.social_links?.linkedin || '',
+        });
+      }
+    } catch (e) {
+      console.error('Failed to load social links:', e);
+    } finally {
+      setSocialLoading(false);
     }
   };
 
-  // Sync upiSettings with business object when business loads
+  // Sync socialLinks with business object when business loads
   useEffect(() => {
-    if (business && !upiLoaded) {
-      const upiId = business.upi_id || '';
-      const upiName = business.upi_name || business.name || '';
-      const upiNotes = business.upi_notes || 'ZOOR UP Store Payment';
-      const upiEnabled = !!upiId;
-      setUpiSettings({
-        upi_id: upiId,
-        upi_name: upiName,
-        upi_notes: upiNotes,
-        upi_enabled: upiEnabled,
+    if (business && !socialLoading) {
+      setSocialLinks({
+        instagram: business.social_links?.instagram || '',
+        facebook: business.social_links?.facebook || '',
+        whatsapp: business.social_links?.whatsapp || '',
+        whatsapp_message: business.social_links?.whatsapp_message || '',
+        website: business.social_links?.website || '',
+        youtube: business.social_links?.youtube || '',
+        linkedin: business.social_links?.linkedin || '',
       });
     }
-  }, [business, upiLoaded]);
+  }, [business, socialLoading]);
+
+  const handleSocialLinksUpdate = async (e) => {
+    e.preventDefault();
+    setSocialSaving(true);
+    try {
+      const socialData = {
+        instagram: socialLinks.instagram,
+        facebook: socialLinks.facebook,
+        whatsapp: socialLinks.whatsapp,
+        whatsapp_message: socialLinks.whatsapp_message,
+        website: socialLinks.website,
+        youtube: socialLinks.youtube,
+        linkedin: socialLinks.linkedin,
+      };
+      const result = await businessService.updateBusinessSocialLinks(user?.business_id, socialData);
+      if (result.success) {
+        addToast('Social media links saved successfully!', 'success');
+      } else {
+        addToast(result.detail || 'Failed to save social links', 'error');
+      }
+    } catch (e) {
+      console.error('Social links save error:', e);
+      addToast(e.message || 'Failed to save social links', 'error');
+    } finally {
+      setSocialSaving(false);
+    }
+  };
 
   const handleUpiUpdate = async (e) => {
     e.preventDefault();
@@ -238,23 +329,15 @@ export const BusinessProfile = () => {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-            {activeLogo ? (
-              <img
-                src={activeLogo}
-                alt={business.name || 'Store'}
-                style={{
-                  width: '84px',
-                  height: '84px',
-                  borderRadius: 'var(--radius-xl)',
-                  border: '3px solid var(--border-strong)',
-                  background: '#fff',
-                  objectFit: 'cover',
-                  boxShadow: 'var(--shadow-lg)',
-                }}
-              />
-            ) : (
-              <ZoorUpLogo size="lg" width={84} height={84} priority />
-            )}
+            <Avatar
+              src={activeLogo}
+              name={business.name || 'Store'}
+              size="xxl"
+              style={{
+                border: '3px solid #FFFFFF',
+                boxShadow: '0 4px 14px rgba(0,0,0,0.12)',
+              }}
+            />
             <div>
               <h2 style={{ fontSize: '1.4rem', fontWeight: 800 }}>{business.name || 'My Store'}</h2>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
@@ -563,9 +646,235 @@ export const BusinessProfile = () => {
           </div>
         </Card>
 
-{/* UPI Payment Settings Card */}
+{/* Social Media Links Card */}
+        {/* Social Media & Contact Links Card */}
         <Card>
-          <CardHeader title="UPI Payment Settings" icon={CreditCard} />
+          <CardHeader title="Social Media & Contact Links" icon={Globe} />
+          <div style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
+              Add your official business social media and contact links. These buttons will be displayed cleanly on your public QR menu and storefront.
+            </p>
+
+            {/* Live Preview Bar */}
+            <div
+              style={{
+                padding: '1rem',
+                background: '#F8FAFC',
+                borderRadius: '12px',
+                border: '1px dashed #CBD5E1',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.5rem',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', fontWeight: 700, color: '#475569' }}>
+                <Sparkles size={14} color="#F59E0B" />
+                <span>Live Storefront Preview</span>
+              </div>
+              {Object.values(socialLinks).some((v) => Boolean(v && String(v).trim())) ? (
+                <SocialLinksBar
+                  socialLinks={socialLinks}
+                  businessName={business.name || 'My Store'}
+                  variant="colored"
+                  size="md"
+                />
+              ) : (
+                <p style={{ fontSize: '0.78rem', color: '#94A3B8', margin: 0, fontStyle: 'italic' }}>
+                  No links configured yet. Enter your links below to preview interactive buttons.
+                </p>
+              )}
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+              {/* Instagram */}
+              <div style={{ padding: '1rem', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                  <div style={{ width: '38px', height: '38px', borderRadius: '10px', background: 'linear-gradient(135deg, #F58529 0%, #DD2A7B 50%, #8134AF 100%)', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <InstagramIcon size={20} color="#FFFFFF" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1A2B49' }}>Instagram</div>
+                    <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Profile username or URL</div>
+                  </div>
+                </div>
+                <Input
+                  placeholder="e.g. @yourstore or instagram.com/yourstore"
+                  value={socialLinks.instagram}
+                  onChange={(e) => setSocialLinks({ ...socialLinks, instagram: e.target.value })}
+                  style={{ fontSize: '0.85rem' }}
+                />
+              </div>
+
+              {/* Facebook */}
+              <div style={{ padding: '1rem', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                  <div style={{ width: '38px', height: '38px', borderRadius: '10px', background: '#1877F2', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <FacebookIcon size={20} color="#FFFFFF" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1A2B49' }}>Facebook</div>
+                    <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Business page URL</div>
+                  </div>
+                </div>
+                <Input
+                  placeholder="e.g. https://facebook.com/yourstorepage"
+                  value={socialLinks.facebook}
+                  onChange={(e) => setSocialLinks({ ...socialLinks, facebook: e.target.value })}
+                  style={{ fontSize: '0.85rem' }}
+                />
+              </div>
+
+              {/* WhatsApp */}
+              <div style={{ padding: '1rem', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                  <div style={{ width: '38px', height: '38px', borderRadius: '10px', background: '#25D366', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <WhatsAppIcon size={20} color="#FFFFFF" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1A2B49' }}>WhatsApp Business</div>
+                    <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Phone number with country code</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                  <Input
+                    placeholder="e.g. +919876543210"
+                    value={socialLinks.whatsapp}
+                    onChange={(e) => setSocialLinks({ ...socialLinks, whatsapp: e.target.value })}
+                    style={{ fontSize: '0.85rem' }}
+                  />
+                  <Input
+                    placeholder="Optional: Pre-filled message (e.g. Hello! I found your store on ZOOR UP)"
+                    value={socialLinks.whatsapp_message}
+                    onChange={(e) => setSocialLinks({ ...socialLinks, whatsapp_message: e.target.value })}
+                    style={{ fontSize: '0.85rem' }}
+                  />
+                </div>
+              </div>
+
+              {/* Website */}
+              <div style={{ padding: '1rem', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                  <div style={{ width: '38px', height: '38px', borderRadius: '10px', background: '#059669', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <WebsiteIcon size={20} color="#FFFFFF" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1A2B49' }}>Website</div>
+                    <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Business website URL</div>
+                  </div>
+                </div>
+                <Input
+                  placeholder="e.g. https://yourbusiness.com"
+                  value={socialLinks.website}
+                  onChange={(e) => setSocialLinks({ ...socialLinks, website: e.target.value })}
+                  style={{ fontSize: '0.85rem' }}
+                />
+              </div>
+
+              {/* YouTube */}
+              <div style={{ padding: '1rem', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                  <div style={{ width: '38px', height: '38px', borderRadius: '10px', background: '#FF0000', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <YouTubeIcon size={20} color="#FFFFFF" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1A2B49' }}>YouTube</div>
+                    <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Channel or video URL</div>
+                  </div>
+                </div>
+                <Input
+                  placeholder="e.g. https://youtube.com/@yourbusiness"
+                  value={socialLinks.youtube}
+                  onChange={(e) => setSocialLinks({ ...socialLinks, youtube: e.target.value })}
+                  style={{ fontSize: '0.85rem' }}
+                />
+              </div>
+
+              {/* LinkedIn */}
+              <div style={{ padding: '1rem', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                  <div style={{ width: '38px', height: '38px', borderRadius: '10px', background: '#0A66C2', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <LinkedInIcon size={20} color="#FFFFFF" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1A2B49' }}>LinkedIn</div>
+                    <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Company or professional profile</div>
+                  </div>
+                </div>
+                <Input
+                  placeholder="e.g. https://linkedin.com/company/yourbusiness"
+                  value={socialLinks.linkedin}
+                  onChange={(e) => setSocialLinks({ ...socialLinks, linkedin: e.target.value })}
+                  style={{ fontSize: '0.85rem' }}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginTop: '0.5rem', display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  if (business?.social_links) {
+                    setSocialLinks({
+                      instagram: business.social_links.instagram || '',
+                      facebook: business.social_links.facebook || '',
+                      whatsapp: business.social_links.whatsapp || '',
+                      whatsapp_message: business.social_links.whatsapp_message || '',
+                      website: business.social_links.website || '',
+                      youtube: business.social_links.youtube || '',
+                      linkedin: business.social_links.linkedin || '',
+                    });
+                    addToast('Reset to saved links', 'info');
+                  } else {
+                    setSocialLinks({
+                      instagram: '',
+                      facebook: '',
+                      whatsapp: '',
+                      whatsapp_message: '',
+                      website: '',
+                      youtube: '',
+                      linkedin: '',
+                    });
+                  }
+                }}
+                disabled={socialSaving}
+              >
+                Reset / Cancel
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setSocialLinks({
+                    instagram: '',
+                    facebook: '',
+                    whatsapp: '',
+                    whatsapp_message: '',
+                    website: '',
+                    youtube: '',
+                    linkedin: '',
+                  });
+                }}
+                disabled={socialSaving}
+              >
+                Clear All
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                loading={socialSaving}
+                onClick={handleSocialLinksUpdate}
+              >
+                <Save size={15} />
+                <span>{socialSaving ? 'Saving...' : 'Save Social Links'}</span>
+              </Button>
+            </div>
+          </div>
+        </Card>
+
+          {/* UPI Payment Settings Card */}
+          <Card>
+            <CardHeader title="UPI Payment Settings" icon={CreditCard} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             <div className="grid-2">
               <Input

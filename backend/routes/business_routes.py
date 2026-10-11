@@ -12,6 +12,8 @@ from backend.models import (
     OnboardingBusinessRequest,
     VoucherCreateRequest,
     VoucherUpdateRequest,
+    SocialLinkRequest,
+    SocialLinkResponse,
     ROLE_BUSINESS_OWNER,
     ROLE_CUSTOMER,
     ROLE_STAFF,
@@ -19,6 +21,12 @@ from backend.models import (
 )
 from backend.database import get_collection
 from backend.auth import get_current_user, require_role
+from backend.models import (
+    normalize_instagram,
+    normalize_facebook,
+    normalize_whatsapp,
+    normalize_url,
+)
 
 router = APIRouter(prefix="/api", tags=["Business & Onboarding"])
 
@@ -870,6 +878,15 @@ def update_business_profile(
         else:
             filtered_updates["upi_id"] = ""
             filtered_updates["upi_enabled"] = False
+
+    if "social_links" in filtered_updates:
+        raw_social = filtered_updates["social_links"]
+        if isinstance(raw_social, dict):
+            filtered_updates["social_links"] = validate_and_normalize_social_links(raw_social)
+        elif raw_social is None:
+            filtered_updates["social_links"] = {}
+        else:
+            raise HTTPException(status_code=400, detail="social_links must be an object/dict.")
     
     # Enforce Gallery Plan Limits
     if "gallery" in filtered_updates and isinstance(filtered_updates["gallery"], list):
@@ -972,6 +989,315 @@ def update_business_upi(
         "upi_notes": (updated_biz.get("metadata") or {}).get("upi_notes") or updated_biz.get("upi_notes") or updates["upi_notes"],
         "upi_enabled": bool(saved_upi_id),
         "message": "UPI settings saved successfully"
+    }
+
+
+@router.get("/public/business/{business_id}/upi")
+@router.get("/public/store/{business_id}/upi")
+def get_public_store_upi(business_id: str):
+    businesses_col = get_collection("businesses")
+    from backend.routes.qr_routes import find_business_by_identifier
+    biz, is_active = find_business_by_identifier(business_id, businesses_col)
+    if not biz:
+        raise HTTPException(status_code=404, detail="Store not found.")
+
+    saved_upi_id = (
+        (biz.get("metadata") or {}).get("upi_id") or
+        biz.get("upi_id") or
+        (biz.get("payment_settings") or {}).get("upi_id") or
+        biz.get("vpa") or
+        ""
+    ).strip()
+
+    saved_upi_name = (
+        (biz.get("metadata") or {}).get("upi_name") or
+        biz.get("upi_name") or
+        biz.get("name") or
+        "Store"
+    ).strip()
+
+    saved_upi_notes = (
+        (biz.get("metadata") or {}).get("upi_notes") or
+        biz.get("upi_notes") or
+        "ZOOR UP Store Payment"
+    ).strip()
+
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "business_name": biz.get("name", "Store"),
+        "upi_id": saved_upi_id,
+        "upi_name": saved_upi_name,
+        "upi_notes": saved_upi_notes,
+        "upi_enabled": bool(saved_upi_id and biz.get("upi_enabled", True)),
+    }
+
+
+# =============================================================
+# SOCIAL MEDIA & CONTACT LINKS ENDPOINTS
+# =============================================================
+
+def validate_and_normalize_social_links(payload: dict) -> dict:
+    """
+    Validates and normalizes all submitted social links.
+    Rejects invalid non-empty links with HTTP 400.
+    Omits/clears empty or None fields.
+    """
+    normalized = {}
+
+    # 1. Instagram
+    if "instagram" in payload:
+        raw = payload.get("instagram")
+        if raw is not None and str(raw).strip():
+            cleaned = normalize_instagram(str(raw))
+            if not cleaned:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid Instagram username or URL. Please provide a valid username or profile link."
+                )
+            normalized["instagram"] = cleaned
+
+    # 2. Facebook
+    if "facebook" in payload:
+        raw = payload.get("facebook")
+        if raw is not None and str(raw).strip():
+            cleaned = normalize_facebook(str(raw))
+            if not cleaned:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid Facebook business page URL. Must be a valid Facebook link."
+                )
+            normalized["facebook"] = cleaned
+
+    # 3. WhatsApp
+    if "whatsapp" in payload:
+        raw = payload.get("whatsapp")
+        if raw is not None and str(raw).strip():
+            cleaned = normalize_whatsapp(str(raw))
+            if not cleaned:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid WhatsApp phone number. Please include country code and 10-15 digits (e.g. +919876543210)."
+                )
+            normalized["whatsapp"] = cleaned
+
+    # WhatsApp pre-filled message
+    if "whatsapp_message" in payload:
+        raw = payload.get("whatsapp_message")
+        if raw is not None and str(raw).strip():
+            msg = str(raw).strip()
+            if len(msg) > 500:
+                raise HTTPException(status_code=400, detail="WhatsApp message must be 500 characters or fewer.")
+            normalized["whatsapp_message"] = msg
+
+    # 4. Optional: Website
+    if "website" in payload:
+        raw = payload.get("website")
+        if raw is not None and str(raw).strip():
+            cleaned = normalize_url(str(raw))
+            if not cleaned:
+                raise HTTPException(status_code=400, detail="Invalid website URL.")
+            normalized["website"] = cleaned
+
+    # 5. Optional: YouTube
+    if "youtube" in payload:
+        raw = payload.get("youtube")
+        if raw is not None and str(raw).strip():
+            cleaned = normalize_url(str(raw))
+            if not cleaned:
+                raise HTTPException(status_code=400, detail="Invalid YouTube channel or video URL.")
+            normalized["youtube"] = cleaned
+
+    # 6. Optional: LinkedIn
+    if "linkedin" in payload:
+        raw = payload.get("linkedin")
+        if raw is not None and str(raw).strip():
+            cleaned = normalize_url(str(raw))
+            if not cleaned:
+                raise HTTPException(status_code=400, detail="Invalid LinkedIn profile or company page URL.")
+            normalized["linkedin"] = cleaned
+
+    return normalized
+
+
+@router.get("/business/social-links")
+def get_business_social_links(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
+    biz = _get_business_for_owner(current_user)
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "social_links": biz.get("social_links") or {}
+    }
+
+
+@router.put("/business/social-links")
+def update_business_social_links(
+    req: SocialLinkRequest,
+    current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))
+):
+    biz = _get_business_for_owner(current_user)
+    businesses_col = get_collection("businesses")
+
+    raw_payload = req.dict(exclude_unset=False)
+    # If the user passed empty string or None, we allow removing links
+    # Validate and normalize
+    normalized_links = validate_and_normalize_social_links(raw_payload)
+
+    # Persist to business record
+    now_iso = datetime.now().isoformat()
+    businesses_col.update_one(
+        {"id": biz["id"]},
+        {"$set": {"social_links": normalized_links, "updated_at": now_iso}}
+    )
+
+    updated_biz = businesses_col.find_one({"id": biz["id"]})
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "social_links": (updated_biz.get("social_links") if updated_biz else normalized_links) or {},
+        "message": "Social media links updated successfully"
+    }
+
+
+@router.get("/public/business/{business_id}/social-links")
+@router.get("/public/store/{business_id}/social-links")
+def get_public_store_social_links(business_id: str):
+    businesses_col = get_collection("businesses")
+    from backend.routes.qr_routes import find_business_by_identifier
+    biz, is_active = find_business_by_identifier(business_id, businesses_col)
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found.")
+
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "business_name": biz.get("name", "Store"),
+        "social_links": biz.get("social_links") or {}
+    }
+
+
+# ============================================================
+# SOCIAL MEDIA LINKS ENDPOINTS
+# ============================================================
+
+@router.get("/business/social-links")
+def get_business_social_links(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
+    """Get social media links for the authenticated business owner's business."""
+    biz = _get_business_for_owner(current_user)
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found.")
+
+    social_links = biz.get("social_links") or {}
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "social_links": {
+            "instagram": social_links.get("instagram"),
+            "facebook": social_links.get("facebook"),
+            "whatsapp": social_links.get("whatsapp"),
+            "whatsapp_message": social_links.get("whatsapp_message"),
+            "website": social_links.get("website"),
+            "youtube": social_links.get("youtube"),
+            "linkedin": social_links.get("linkedin"),
+        }
+    }
+
+
+@router.put("/business/social-links")
+def update_business_social_links(
+    req: SocialLinkRequest,
+    current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))
+):
+    """Update social media links for the authenticated business owner's business."""
+    biz = _get_business_for_owner(current_user)
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found.")
+
+    businesses_col = get_collection("businesses")
+
+    # Normalize and validate each social link
+    social_links = {}
+
+    if req.instagram is not None:
+        normalized = normalize_instagram(req.instagram)
+        if normalized is not None and req.instagram.strip():
+            social_links["instagram"] = normalized
+
+    if req.facebook is not None:
+        normalized = normalize_facebook(req.facebook)
+        if normalized is not None and req.facebook.strip():
+            social_links["facebook"] = normalized
+
+    if req.whatsapp is not None:
+        normalized = normalize_whatsapp(req.whatsapp)
+        if normalized is not None and req.whatsapp.strip():
+            social_links["whatsapp"] = normalized
+            if req.whatsapp_message:
+                social_links["whatsapp_message"] = req.whatsapp_message.strip()[:200]
+
+    if req.website is not None:
+        normalized = normalize_url(req.website)
+        if normalized is not None and req.website.strip():
+            social_links["website"] = normalized
+
+    if req.youtube is not None:
+        normalized = normalize_url(req.youtube)
+        if normalized is not None and req.youtube.strip():
+            social_links["youtube"] = normalized
+
+    if req.linkedin is not None:
+        normalized = normalize_url(req.linkedin)
+        if normalized is not None and req.linkedin.strip():
+            social_links["linkedin"] = normalized
+
+    # Merge with existing social links
+    existing_social = biz.get("social_links") or {}
+    merged_social = {**existing_social, **social_links}
+
+    # Clean up empty values
+    cleaned_social = {k: v for k, v in merged_social.items() if v}
+
+    updates = {
+        "social_links": cleaned_social,
+        "updated_at": datetime.now().isoformat()
+    }
+
+    businesses_col.update_one({"id": biz["id"]}, {"$set": updates})
+    updated_biz = businesses_col.find_one({"id": biz["id"]})
+
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "social_links": updated_biz.get("social_links") or {},
+        "message": "Social media links updated successfully"
+    }
+
+
+@router.get("/public/business/{business_id}/social-links")
+@router.get("/public/store/{business_id}/social-links")
+def get_public_business_social_links(business_id: str):
+    """Get social media links for a business (public access)."""
+    businesses_col = get_collection("businesses")
+    from backend.routes.qr_routes import find_business_by_identifier
+    biz, is_active = find_business_by_identifier(business_id, businesses_col)
+    if not biz:
+        raise HTTPException(status_code=404, detail="Store not found.")
+
+    social_links = biz.get("social_links") or {}
+
+    return {
+        "success": True,
+        "business_id": biz["id"],
+        "business_name": biz.get("name", "Store"),
+        "social_links": {
+            "instagram": social_links.get("instagram"),
+            "facebook": social_links.get("facebook"),
+            "whatsapp": social_links.get("whatsapp"),
+            "whatsapp_message": social_links.get("whatsapp_message"),
+            "website": social_links.get("website"),
+            "youtube": social_links.get("youtube"),
+            "linkedin": social_links.get("linkedin"),
+        }
     }
 
 

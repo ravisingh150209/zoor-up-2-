@@ -475,6 +475,11 @@ def process_razorpay_webhook_event(event_payload: Dict[str, Any]) -> Dict[str, A
                         {"id": payment.get("order_id")},
                         {"$set": {"payment_status": "PAID", "payment_method": "RAZORPAY", "updated_at": now_iso}}
                     )
+                    invoices_col = get_collection("invoices")
+                    invoices_col.update_one(
+                        {"order_id": payment.get("order_id")},
+                        {"$set": {"payment_status": "paid", "paid_amount": float(payment.get("amount") or 0.0), "balance": 0.0, "status": "paid", "updated_at": now_iso}}
+                    )
                     try:
                         record_commission_for_payment(
                             payment_id=payment.get("payment_id"),

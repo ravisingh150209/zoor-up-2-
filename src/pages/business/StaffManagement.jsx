@@ -9,6 +9,7 @@ import { Modal } from '../../components/ui/Modal';
 import { ConfirmationDialog } from '../../components/ui/Controls';
 import { LoadingState } from '../../components/ui/States';
 import { ImageUploader } from '../../components/ui/ImageUploader';
+import { Avatar } from '../../components/ui/Avatar';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
 
@@ -109,30 +110,11 @@ export const StaffManagement = () => {
       accessor: 'name',
       render: (_, row) => (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          {(row.profile_image_url || row.avatar) ? (
-            <img
-              src={row.profile_image_url || row.avatar}
-              alt={row.name}
-              style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }}
-            />
-          ) : (
-            <div
-              style={{
-                width: '40px',
-                height: '40px',
-                borderRadius: '50%',
-                background: '#1A2B49',
-                color: '#FFFFFF',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 700,
-                fontSize: '0.85rem',
-              }}
-            >
-              {(row.name || 'S').charAt(0).toUpperCase()}
-            </div>
-          )}
+          <Avatar
+            src={row.profile_image_url || row.avatar}
+            name={row.name}
+            size="md"
+          />
           <div>
             <strong style={{ fontSize: '0.95rem', color: 'var(--text-primary)' }}>{row.name}</strong>
             <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>{row.role}</div>

@@ -96,7 +96,8 @@ def get_public_businesses():
             "upi_id": b.get("upi_id", ""),
             "stamps_required": int(b.get("stamps_required", 10) or 10),
             "reward_description": b.get("reward_description", ""),
-            "menu_enabled": b.get("menu_enabled", True)
+            "menu_enabled": b.get("menu_enabled", True),
+            "social_links": b.get("social_links") or {}
         })
     return result
 
@@ -1194,7 +1195,8 @@ def get_public_menu(business_identifier: str):
             "upi_id": biz.get("upi_id", ""),
             "stamps_required": int(biz.get("stamps_required", 10) or 10),
             "reward_description": biz.get("reward_description", ""),
-            "menu_enabled": menu_enabled
+            "menu_enabled": menu_enabled,
+            "social_links": biz.get("social_links") or {}
         },
         "menu": {
             "enabled": menu_enabled,

@@ -8,6 +8,7 @@ import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { ImageUploader } from '../../components/ui/ImageUploader';
 import { ZoorUpLogo } from '../../components/ui/ZoorUpLogo';
+import { Avatar } from '../../components/ui/Avatar';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { customerService } from '../../services/customerService';
@@ -164,20 +165,15 @@ export const CustomerProfile = () => {
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', marginBottom: '0.5rem' }}>
-            {profileImage ? (
-              <img
-                src={profileImage}
-                alt={displayName}
-                style={{
-                  width: '48px',
-                  height: '48px',
-                  borderRadius: '50%',
-                  objectFit: 'cover',
-                  border: '2px solid #F59E0B',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-                }}
-              />
-            ) : null}
+            <Avatar
+              src={profileImage || profile?.avatar || profile?.profile_image_url}
+              name={displayName}
+              size="lg"
+              style={{
+                border: '2px solid #F59E0B',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+              }}
+            />
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Badge style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#F59E0B', border: '1px solid #F59E0B' }}>{tier} Member</Badge>
               <Badge style={{ background: 'rgba(255, 255, 255, 0.1)', color: '#CBD5E1', border: '1px solid rgba(255, 255, 255, 0.15)' }}>{profile?.segment || 'NEW'}</Badge>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
+import confetti from 'canvas-confetti';
 
 import { getErrorMessage } from '../../utils/errorUtils';
 import {
@@ -24,6 +25,9 @@ import {
   QrCode,
   Copy,
   ExternalLink,
+  RefreshCw,
+  Loader2,
+  Sparkles,
 } from 'lucide-react';
 import { useCart } from '../../context/CartContext';
 import { billingService } from '../../services/billingService';
@@ -37,6 +41,20 @@ import { Badge } from '../../components/ui/Badge';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { notificationService, NOTIFICATION_TYPES } from '../../services/notificationService';
+
+const loadRazorpayScript = () => {
+  return new Promise((resolve, reject) => {
+    if (window.Razorpay) {
+      resolve(true);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve(true);
+    script.onerror = () => reject(new Error('Failed to load secure UPI checkout. Please check your internet connection.'));
+    document.body.appendChild(script);
+  });
+};
 
 export const PublicCheckout = () => {
   const { items, subtotal, clearCart, businessSlug, businessId } = useCart();
@@ -55,6 +73,13 @@ export const PublicCheckout = () => {
   const [placing, setPlacing] = useState(false);
   const placingRef = useRef(false);
   const [copiedUpi, setCopiedUpi] = useState(false);
+
+  // Automatic Payment States:
+  // 'IDLE' | 'AWAITING_PAYMENT' | 'VERIFYING_PAYMENT' | 'PAYMENT_SUCCESSFUL' | 'PAYMENT_FAILED' | 'PAYMENT_PENDING'
+  const [paymentState, setPaymentState] = useState('IDLE');
+  const [paymentError, setPaymentError] = useState('');
+  const [activeOrderRef, setActiveOrderRef] = useState(null);
+  const [activeRzpOrder, setActiveRzpOrder] = useState(null);
 
   // Dining option & Table selection state
   const [orderType, setOrderType] = useState('DINE_IN'); // 'DINE_IN' | 'TAKEAWAY'
@@ -169,6 +194,95 @@ export const PublicCheckout = () => {
     }
   };
 
+  const launchRazorpayUpiCheckout = async (orderRef, rzpOrder) => {
+    setPaymentState('AWAITING_PAYMENT');
+    setPaymentError('');
+    await loadRazorpayScript();
+
+    return new Promise((resolve) => {
+      const options = {
+        key: rzpOrder.razorpay_key_id,
+        amount: rzpOrder.amount_paise,
+        currency: 'INR',
+        name: business?.name || 'Store',
+        description: `Order #${orderRef}`,
+        order_id: rzpOrder.razorpay_order_id,
+        prefill: {
+          name: customerName.trim(),
+          contact: customerPhone.trim(),
+        },
+        theme: {
+          color: '#059669',
+        },
+        config: {
+          display: {
+            blocks: {
+              upi: {
+                name: 'Pay via UPI',
+                instruments: [{ method: 'upi' }],
+              },
+              other: {
+                name: 'Other Modes (Test Mode)',
+                instruments: [{ method: 'card' }, { method: 'netbanking' }, { method: 'wallet' }],
+              },
+            },
+            sequence: ['block.upi', 'block.other'],
+            preferences: {
+              show_default_blocks: true,
+            },
+          },
+        },
+        handler: async (response) => {
+          setPaymentState('VERIFYING_PAYMENT');
+          try {
+            const verifyRes = await orderService.verifyRazorpayPayment({
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+              order_id: orderRef,
+            });
+
+            if (verifyRes?.success && (verifyRes?.status === 'paid' || verifyRes?.verified)) {
+              setPaymentState('PAYMENT_SUCCESSFUL');
+              try {
+                confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });
+              } catch (_) {}
+              addToast('Payment automatically verified & confirmed!', 'success');
+              clearCart();
+              setTimeout(() => {
+                navigate(`/payment-status/${orderRef}`);
+              }, 1200);
+              resolve(true);
+            } else {
+              throw new Error(verifyRes?.message || 'Payment signature verification failed.');
+            }
+          } catch (verifyErr) {
+            setPaymentState('PAYMENT_FAILED');
+            const msg = getErrorMessage(verifyErr) || 'Payment signature verification failed.';
+            setPaymentError(msg);
+            addToast(msg, 'error');
+            resolve(false);
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setPaymentState('PAYMENT_PENDING');
+            orderService.recordRazorpayPaymentFailure({
+              razorpay_order_id: rzpOrder.razorpay_order_id,
+              error_code: 'MODAL_DISMISSED',
+              error_description: 'Customer dismissed UPI checkout modal before completing transaction.',
+            }).catch(() => {});
+            addToast('UPI checkout closed. Order remains pending verification.', 'info');
+            resolve(false);
+          },
+        },
+      };
+
+      const rzpInstance = new window.Razorpay(options);
+      rzpInstance.open();
+    });
+  };
+
   const handlePlaceOrder = async () => {
     if (placingRef.current) return;
     if ((user?.role || '').toUpperCase() !== 'CUSTOMER') {
@@ -213,6 +327,7 @@ export const PublicCheckout = () => {
 
     placingRef.current = true;
     setPlacing(true);
+    setPaymentError('');
     try {
       const order = await orderService.createOrder({
         business_id: business.id,
@@ -227,6 +342,7 @@ export const PublicCheckout = () => {
       });
 
       const orderRef = order.order_id || order.id || order.invoice_id;
+      setActiveOrderRef(orderRef);
 
       // Notify business of incoming in-store order
       try {
@@ -235,28 +351,29 @@ export const PublicCheckout = () => {
           business_id: order.business_id,
           type: NOTIFICATION_TYPES.PAYMENT_PENDING,
           title: `New ${paymentMethod} Order: ₹${grandTotal} (${orderType === 'DINE_IN' ? `Table ${finalTableNumber}` : 'Takeaway'})`,
-          message: `${customerName.trim()} placed order ${orderRef} worth ₹${grandTotal}. Direct payment awaiting counter verification.`,
+          message: `${customerName.trim()} placed order ${orderRef} worth ₹${grandTotal}. Verification in progress.`,
           entity_id: orderRef,
           action_url: '/business/orders',
         }).catch(() => {});
       } catch (_) {}
 
-      clearCart();
-
       if (paymentMethod === 'UPI') {
-        // Register direct UPI payment record with business's authoritative UPI ID
         try {
-          const upiPayment = await orderService.createUpiPayment(orderRef, business.id);
-          addToast('Order placed! Direct UPI payment pending store verification.', 'success');
-          navigate(`/payment-status/${upiPayment?.payment_id || orderRef}`);
+          // Initialize authoritative Razorpay order for instant automated UPI verification
+          const rzpOrder = await orderService.createRazorpayOrder(orderRef, business.id);
+          setActiveRzpOrder(rzpOrder);
+          await launchRazorpayUpiCheckout(orderRef, rzpOrder);
         } catch (upiErr) {
-          console.warn('Payment record intent creation note:', upiErr);
-          addToast('Order placed! Please complete UPI payment at counter.', 'info');
+          console.warn('Razorpay UPI auto-initiation note:', upiErr);
+          setPaymentState('PAYMENT_PENDING');
+          setPaymentError(getErrorMessage(upiErr) || 'Could not launch automated UPI checkout.');
+          addToast('Order placed! Redirecting to payment status...', 'info');
           navigate(`/payment-status/${orderRef}`);
         }
       } else {
         // Cash payment
-        addToast('Order recorded successfully!', 'success');
+        clearCart();
+        addToast('Order placed! Please pay cash on counter.', 'success');
         navigate(`/order-success/${orderRef}`);
       }
     } catch (e) {
@@ -758,8 +875,28 @@ export const PublicCheckout = () => {
                       💡 If your UPI app does not open automatically, copy the Store UPI ID above or scan the QR code.
                     </p>
 
-                    <div style={{ padding: '0.5rem', background: '#FEF3C7', borderRadius: '8px', border: '1px solid #FDE68A', fontSize: '0.73rem', color: '#92400E', textAlign: 'left' }}>
-                      ℹ️ Transfer ₹{grandTotal} directly to {upiConfig.upi_name || business?.name}. Your order will be placed with <strong>Pending Verification</strong> status until verified by the store.
+                    {/* Automatic Verification Badge */}
+                    <div
+                      style={{
+                        padding: '0.65rem 0.85rem',
+                        background: '#F0FDF4',
+                        borderRadius: '10px',
+                        border: '1px solid #BBF7D0',
+                        fontSize: '0.78rem',
+                        color: '#166534',
+                        textAlign: 'left',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.55rem',
+                      }}
+                    >
+                      <ShieldCheck size={18} color="#16A34A" style={{ flexShrink: 0 }} />
+                      <div>
+                        <strong>Instant Automatic UPI Verification</strong>
+                        <div style={{ fontSize: '0.72rem', color: '#15803D' }}>
+                          Supports Google Pay, PhonePe, Paytm, BHIM, and all UPI apps. Cryptographically verified in real-time.
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -850,25 +987,208 @@ export const PublicCheckout = () => {
           </div>
         </div>
 
+        {/* Clear Payment States Display */}
+        {paymentState === 'AWAITING_PAYMENT' && (
+          <div
+            id="checkout-state-awaiting"
+            style={{
+              padding: '0.85rem 1rem',
+              background: '#EFF6FF',
+              border: '1.5px solid #93C5FD',
+              borderRadius: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.75rem',
+              color: '#1E40AF',
+              fontSize: '0.85rem',
+            }}
+          >
+            <Clock size={22} color="#2563EB" style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, textAlign: 'left' }}>
+              <strong style={{ display: 'block', fontSize: '0.9rem' }}>Awaiting payment</strong>
+              <span style={{ fontSize: '0.75rem', color: '#3B82F6' }}>
+                Please complete payment in your UPI app (GPay, PhonePe, Paytm) or scan the QR code.
+              </span>
+            </div>
+          </div>
+        )}
+
+        {paymentState === 'VERIFYING_PAYMENT' && (
+          <div
+            id="checkout-state-verifying"
+            style={{
+              padding: '0.85rem 1rem',
+              background: '#F0FDF4',
+              border: '1.5px solid #86EFAC',
+              borderRadius: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.75rem',
+              color: '#166534',
+              fontSize: '0.85rem',
+            }}
+          >
+            <RefreshCw size={22} color="#16A34A" className="animate-spin" style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, textAlign: 'left' }}>
+              <strong style={{ display: 'block', fontSize: '0.9rem' }}>Verifying payment</strong>
+              <span style={{ fontSize: '0.75rem', color: '#15803D' }}>
+                Verifying authentic cryptographic signature with banking gateway...
+              </span>
+            </div>
+          </div>
+        )}
+
+        {paymentState === 'PAYMENT_SUCCESSFUL' && (
+          <div
+            id="checkout-state-success"
+            style={{
+              padding: '0.85rem 1rem',
+              background: '#DCFCE7',
+              border: '2px solid #22C55E',
+              borderRadius: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.75rem',
+              color: '#15803D',
+              fontSize: '0.85rem',
+            }}
+          >
+            <CheckCircle2 size={24} color="#16A34A" style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, textAlign: 'left' }}>
+              <strong style={{ display: 'block', fontSize: '0.95rem' }}>Payment successful</strong>
+              <span style={{ fontSize: '0.75rem', color: '#166534' }}>
+                Payment verified and confirmed by server! Redirecting to receipt...
+              </span>
+            </div>
+          </div>
+        )}
+
+        {paymentState === 'PAYMENT_FAILED' && (
+          <div
+            id="checkout-state-failed"
+            style={{
+              padding: '0.85rem 1rem',
+              background: '#FEF2F2',
+              border: '1.5px solid #FECACA',
+              borderRadius: '14px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.5rem',
+              color: '#991B1B',
+              fontSize: '0.85rem',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <AlertCircle size={22} color="#DC2626" style={{ flexShrink: 0 }} />
+              <div style={{ flex: 1, textAlign: 'left' }}>
+                <strong style={{ display: 'block', fontSize: '0.9rem' }}>Payment failed</strong>
+                <span style={{ fontSize: '0.75rem', color: '#B91C1C' }}>
+                  {paymentError || 'Payment could not be verified by the server. Please retry.'}
+                </span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
+              {activeOrderRef && activeRzpOrder && (
+                <Button size="sm" variant="danger" onClick={() => launchRazorpayUpiCheckout(activeOrderRef, activeRzpOrder)}>
+                  Retry Payment
+                </Button>
+              )}
+              {activeOrderRef && (
+                <Button size="sm" variant="outline" onClick={() => navigate(`/payment-status/${activeOrderRef}`)}>
+                  View Status
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {paymentState === 'PAYMENT_PENDING' && (
+          <div
+            id="checkout-state-pending"
+            style={{
+              padding: '0.85rem 1rem',
+              background: '#FFFBEB',
+              border: '1.5px solid #FDE68A',
+              borderRadius: '14px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.5rem',
+              color: '#92400E',
+              fontSize: '0.85rem',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <Clock size={22} color="#D97706" style={{ flexShrink: 0 }} />
+              <div style={{ flex: 1, textAlign: 'left' }}>
+                <strong style={{ display: 'block', fontSize: '0.9rem' }}>Payment pending</strong>
+                <span style={{ fontSize: '0.75rem', color: '#B45309' }}>
+                  Checkout modal closed before completing payment. Your order remains pending.
+                </span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
+              {activeOrderRef && activeRzpOrder && (
+                <Button size="sm" variant="primary" onClick={() => launchRazorpayUpiCheckout(activeOrderRef, activeRzpOrder)}>
+                  Complete UPI Payment Now
+                </Button>
+              )}
+              {activeOrderRef && (
+                <Button size="sm" variant="outline" onClick={() => navigate(`/payment-status/${activeOrderRef}`)}>
+                  View Status
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Place Order Button */}
         <Button
           variant="primary"
           size="lg"
           block
-          loading={placing}
-          disabled={placing || (paymentMethod === 'UPI' && !upiConfig?.upi_id)}
-          onClick={handlePlaceOrder}
-          icon={CheckCircle2}
+          loading={placing || paymentState === 'VERIFYING_PAYMENT'}
+          disabled={
+            placing ||
+            paymentState === 'VERIFYING_PAYMENT' ||
+            paymentState === 'PAYMENT_SUCCESSFUL' ||
+            (paymentMethod === 'UPI' && !upiConfig?.upi_id)
+          }
+          onClick={
+            paymentState === 'PAYMENT_PENDING' || paymentState === 'PAYMENT_FAILED'
+              ? () => (activeOrderRef && activeRzpOrder ? launchRazorpayUpiCheckout(activeOrderRef, activeRzpOrder) : handlePlaceOrder())
+              : handlePlaceOrder
+          }
+          icon={paymentState === 'PAYMENT_SUCCESSFUL' ? CheckCircle2 : Check}
           style={{
             padding: '1rem',
             fontSize: '1.05rem',
             fontWeight: 800,
-            background: paymentMethod === 'UPI' ? '#059669' : '#F59E0B',
-            borderColor: paymentMethod === 'UPI' ? '#059669' : '#F59E0B',
+            background:
+              paymentState === 'PAYMENT_SUCCESSFUL'
+                ? '#16A34A'
+                : paymentMethod === 'UPI'
+                ? '#059669'
+                : '#F59E0B',
+            borderColor:
+              paymentState === 'PAYMENT_SUCCESSFUL'
+                ? '#16A34A'
+                : paymentMethod === 'UPI'
+                ? '#059669'
+                : '#F59E0B',
           }}
         >
-          {paymentMethod === 'UPI'
-            ? `Place Order via Store UPI — ₹${grandTotal}`
+          {paymentState === 'AWAITING_PAYMENT'
+            ? 'Awaiting UPI Payment...'
+            : paymentState === 'VERIFYING_PAYMENT'
+            ? 'Verifying Payment Signature...'
+            : paymentState === 'PAYMENT_SUCCESSFUL'
+            ? 'Payment Verified & Confirmed!'
+            : paymentState === 'PAYMENT_FAILED'
+            ? `Retry UPI Payment — ₹${grandTotal}`
+            : paymentState === 'PAYMENT_PENDING'
+            ? `Complete UPI Payment — ₹${grandTotal}`
+            : paymentMethod === 'UPI'
+            ? `Pay via UPI & Verify Instantly — ₹${grandTotal}`
             : `Place Order (Cash on Counter) — ₹${grandTotal}`}
         </Button>
       </div>

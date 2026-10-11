@@ -555,5 +555,71 @@ export const businessService = {
         categoryDistribution,
       }
     };
-  }
+  },
+
+  // Social Media Links
+  getBusinessSocialLinks: async (businessId) => {
+    if (!businessId) throw new Error('Business ID is required');
+    const token = authStorage.getToken();
+    if (token) {
+      try {
+        const resp = await fetch(`${API_BASE}/api/business/social-links`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/json'
+          }
+        });
+        if (resp.ok) {
+          return await resp.json();
+        }
+      } catch (e) {
+        console.warn('[BUSINESS] Social links fetch error:', e);
+        if (isProductionEnvironment()) throw e;
+      }
+    }
+    if (isProductionEnvironment()) throw new Error('Social links unavailable from the server.');
+    return null;
+  },
+
+  updateBusinessSocialLinks: async (businessId, socialData) => {
+    if (!businessId) throw new Error('Business ID is required');
+    const token = authStorage.getToken();
+    if (token) {
+      try {
+        const resp = await fetch(`${API_BASE}/api/business/social-links`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify(socialData),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || 'Failed to update social links');
+        return data;
+      } catch (e) {
+        if (isProductionEnvironment()) throw e;
+        return { success: false, error: e.message };
+      }
+    }
+    if (isProductionEnvironment()) throw new Error('Social links update unavailable from the server.');
+    return { success: false, error: 'Offline mode' };
+  },
+
+  // Public Social Links
+  getPublicBusinessSocialLinks: async (businessId) => {
+    if (!businessId) return { social_links: {} };
+    try {
+      const resp = await fetch(`${API_BASE}/api/public/business/${encodeURIComponent(businessId)}/social-links`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (resp.ok) {
+        return await resp.json();
+      }
+    } catch (e) {
+      console.warn('[BUSINESS] Public social links fetch error:', e);
+    }
+    return { social_links: {} };
+  },
 };

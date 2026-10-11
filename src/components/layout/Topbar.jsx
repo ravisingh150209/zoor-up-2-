@@ -199,7 +199,11 @@ export const Topbar = ({ onMenuClick, collapsed = false, onToggleCollapse, title
             aria-expanded={dropdownOpen}
             aria-label="User account dropdown"
           >
-            <Avatar src={user?.avatar} name={user?.name || user?.email} size="sm" />
+            <Avatar
+              src={user?.avatar || user?.profile_image_url || user?.logo_url || user?.logo}
+              name={user?.name || user?.email}
+              size="sm"
+            />
             <span
               className="hide-on-tablet-down"
               style={{

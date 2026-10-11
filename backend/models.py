@@ -1,6 +1,7 @@
 """
 ZOOR UP Pydantic Data Models & Schemas
 """
+import re
 from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field, EmailStr
 from datetime import datetime
@@ -276,4 +277,92 @@ class ProductUpdateRequest(BaseModel):
     sku: Optional[str] = None
     barcode: Optional[str] = None
     active: Optional[bool] = None
+
+
+class SocialLinkRequest(BaseModel):
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
+    whatsapp: Optional[str] = None
+    whatsapp_message: Optional[str] = None
+    website: Optional[str] = None
+    youtube: Optional[str] = None
+    linkedin: Optional[str] = None
+
+
+class SocialLinkResponse(BaseModel):
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
+    whatsapp: Optional[str] = None
+    whatsapp_message: Optional[str] = None
+    website: Optional[str] = None
+    youtube: Optional[str] = None
+    linkedin: Optional[str] = None
+
+
+def normalize_instagram(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    val = value.strip()
+    if not val:
+        return None
+    # Reject unsafe protocols
+    if any(val.lower().startswith(p) for p in ("javascript:", "data:", "vbscript:")):
+        return None
+    # Remove @ if present
+    if val.startswith("@"):
+        val = val[1:]
+    # If it's a full URL, extract username
+    if "instagram.com/" in val:
+        parts = val.split("instagram.com/")
+        if len(parts) > 1:
+            val = parts[-1].strip("/").split("?")[0]
+    # Validate username format
+    if not re.match(r"^[a-zA-Z0-9._]{1,30}$", val):
+        return None
+    return f"https://instagram.com/{val}"
+
+
+def normalize_facebook(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    val = value.strip()
+    if not val:
+        return None
+    if any(val.lower().startswith(p) for p in ("javascript:", "data:", "vbscript:")):
+        return None
+    if not val.startswith("http"):
+        val = "https://" + val
+    # Must be valid Facebook domain
+    fb_pattern = r"^https?://([a-zA-Z0-9-]+\.)*(facebook\.com|fb\.me|fb\.com)/.+$"
+    if not re.match(fb_pattern, val, re.IGNORECASE):
+        return None
+    return val
+
+
+def normalize_whatsapp(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    val = value.strip()
+    if not val:
+        return None
+    # Extract only digits
+    digits = re.sub(r"[^\d]", "", val)
+    if len(digits) < 10 or len(digits) > 15:
+        return None
+    return digits
+
+
+def normalize_url(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    val = value.strip()
+    if not val:
+        return None
+    if any(val.lower().startswith(p) for p in ("javascript:", "data:", "vbscript:", "file:")):
+        return None
+    if not val.startswith("http"):
+        val = "https://" + val
+    if not re.match(r"^https?://[a-zA-Z0-9-._~:/?#\[\]@!$&'()*+,;=%]+$", val):
+        return None
+    return val
 
