@@ -189,6 +189,9 @@ def run_tests():
     print(f"\nFINAL TEST SUITE SUMMARY: {'ALL 6 TESTS PASSED' if all_passed else 'SOME TESTS FAILED'}")
     return all_passed
 
+def test_customer_mobile_suite():
+    assert run_tests() is True
+
 if __name__ == "__main__":
     ok = run_tests()
     sys.exit(0 if ok else 1)
