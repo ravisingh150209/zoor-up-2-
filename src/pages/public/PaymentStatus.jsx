@@ -207,7 +207,7 @@ export const PaymentStatus = () => {
         addToast('Payment verified successfully!', 'success');
         // Reload the page to show updated status
         window.location.reload();
-      } else if (payment && payment.status === 'created') {
+      } else if (payment && (payment.status === 'pending' || payment.status === 'created')) {
         // Payment not yet completed, offer to retry checkout
         addToast('Payment not yet completed. Opening Razorpay checkout...', 'info');
         // Reload Razorpay checkout

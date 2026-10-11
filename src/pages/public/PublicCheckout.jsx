@@ -273,6 +273,13 @@ export const PublicCheckout = () => {
             modal: {
               ondismiss: () => {
                 // User cancelled the payment
+                try {
+                  orderService.recordRazorpayPaymentFailure({
+                    razorpay_order_id: rzpOrder.razorpay_order_id,
+                    error_code: 'CANCELLED_BY_USER',
+                    error_description: 'User dismissed checkout modal',
+                  });
+                } catch (_) {}
                 addToast('Payment cancelled. Your order is still pending.', 'warning');
                 navigate(`/payment-status/${rzpOrder.payment_id}`);
               },
@@ -282,6 +289,13 @@ export const PublicCheckout = () => {
           const rzp = new window.Razorpay(options);
           rzp.on('payment.failed', async (response) => {
             console.error('Razorpay payment failed:', response.error);
+            try {
+              orderService.recordRazorpayPaymentFailure({
+                razorpay_order_id: rzpOrder.razorpay_order_id,
+                error_code: response?.error?.code || 'PAYMENT_FAILED',
+                error_description: response?.error?.description || 'Payment rejected by gateway',
+              });
+            } catch (_) {}
             const message = getErrorMessage(response?.error || response, 'Payment failed. Please try again.');
             addToast(message, 'error');
             setRazorpayLoading(false);

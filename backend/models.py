@@ -245,7 +245,7 @@ class OrderCreateRequest(BaseModel):
     business_id: str = Field(..., min_length=1, max_length=128)
     items: List[OrderItemInput] = Field(..., min_items=1, max_items=50)
     order_type: Literal["DINE_IN", "TAKEAWAY"]
-    payment_method: Literal["UPI", "CASH"] = "UPI"
+    payment_method: Literal["UPI", "CASH", "RAZORPAY"] = "UPI"
     table_id: Optional[str] = None
     table_number: Optional[str] = Field(None, max_length=64)
     customer_name: Optional[str] = Field(None, max_length=120)

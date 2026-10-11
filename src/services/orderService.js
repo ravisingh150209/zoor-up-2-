@@ -146,6 +146,13 @@ export const orderService = {
     return request(`/api/payments/razorpay/${encodeURIComponent(razorpayOrderId)}`);
   },
 
+  recordRazorpayPaymentFailure: async (data) => {
+    return request('/api/payments/razorpay/failure', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }).catch(() => null);
+  },
+
   updateOrderStatus: async (orderId, orderStatus) => request(
     `/api/business/orders/${encodeURIComponent(orderId)}/status`,
     { method: 'PATCH', body: JSON.stringify({ status: orderStatus }) },

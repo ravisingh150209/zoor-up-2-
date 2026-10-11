@@ -381,19 +381,28 @@ class SupabaseCollection:
         elif self.table_name in ("payments", "invoices", "table_reservations", "visits"):
             if "status" in doc and isinstance(doc["status"], str):
                 s = doc["status"].lower()
-                if self.table_name == "payments" and s == "created":
-                    s = "pending"
+                if self.table_name == "payments":
+                    if s == "created":
+                        s = "pending"
+                    elif s in ("cancelled", "canceled"):
+                        s = "failed"
                 doc["status"] = s
             if "payment_status" in doc and isinstance(doc["payment_status"], str):
                 ps = doc["payment_status"].lower()
                 if ps == "created":
                     ps = "pending"
+                elif ps in ("cancelled", "canceled"):
+                    ps = "failed"
                 doc["payment_status"] = ps
         elif self.table_name == "orders":
             if "payment_status" in doc and isinstance(doc["payment_status"], str):
                 ps = doc["payment_status"].lower()
                 if ps == "created":
                     doc["payment_status"] = "pending"
+                elif ps in ("cancelled", "canceled"):
+                    doc["payment_status"] = "failed"
+                else:
+                    doc["payment_status"] = ps
         elif self.table_name in ("vouchers", "customer_vouchers"):
             if not doc.get("code"):
                 doc["code"] = f"VCH-{uuid.uuid4().hex[:8].upper()}"
@@ -483,19 +492,28 @@ class SupabaseCollection:
         elif self.table_name in ("payments", "invoices", "table_reservations", "visits"):
             if "status" in values and isinstance(values["status"], str):
                 s = values["status"].lower()
-                if self.table_name == "payments" and s == "created":
-                    s = "pending"
+                if self.table_name == "payments":
+                    if s == "created":
+                        s = "pending"
+                    elif s in ("cancelled", "canceled"):
+                        s = "failed"
                 values["status"] = s
             if "payment_status" in values and isinstance(values["payment_status"], str):
                 ps = values["payment_status"].lower()
                 if ps == "created":
                     ps = "pending"
+                elif ps in ("cancelled", "canceled"):
+                    ps = "failed"
                 values["payment_status"] = ps
         elif self.table_name == "orders":
             if "payment_status" in values and isinstance(values["payment_status"], str):
                 ps = values["payment_status"].lower()
                 if ps == "created":
                     values["payment_status"] = "pending"
+                elif ps in ("cancelled", "canceled"):
+                    values["payment_status"] = "failed"
+                else:
+                    values["payment_status"] = ps
 
         # Map known custom business attributes into metadata JSONB column for PostgreSQL persistence
         if self.table_name in ("businesses", "stores"):
@@ -551,7 +569,7 @@ class SupabaseCollection:
                         bad_col = match.group(1)
                         if bad_col in values:
                             val = values.pop(bad_col)
-                            if bad_col != "metadata" and self.table_name in ("businesses", "stores", "products", "customers", "orders", "profiles"):
+                            if bad_col != "metadata" and self.table_name in ("businesses", "stores", "products", "customers", "orders", "profiles", "payments", "invoices"):
                                 existing_meta = dict(existing.get("metadata") or {}) if existing and isinstance(existing.get("metadata"), dict) else {}
                                 if "metadata" in values and isinstance(values["metadata"], dict):
                                     existing_meta.update(values["metadata"])
@@ -632,9 +650,12 @@ class SupabaseDatabase:
             self.is_connected = False
             raise SupabaseDatabaseError(f"Supabase Postgres health check failed ({type(exc).__name__}: {exc}).") from None
 
-    def get_collection(self, name: str) -> SupabaseCollection:
+    def get_collection(self, name: str) -> Any:
         if name in UNSUPPORTED_COLLECTIONS:
             raise UnsupportedSupabaseCollection(f"Collection {name!r} is unsupported.")
+        if name in ("commissions", "webhook_events"):
+            from backend.database import MockCollection
+            return MockCollection(name)
         table_name = COLLECTION_TABLE_MAP.get(name) or name
         return SupabaseCollection(self.client, name, table_name)
 

@@ -24,7 +24,11 @@ from backend.razorpay_service import (
     create_razorpay_order_for_payment,
     verify_razorpay_payment,
     get_razorpay_payment_by_order_id,
+    record_razorpay_payment_failure,
+    verify_razorpay_webhook_signature,
+    process_razorpay_webhook_event,
 )
+from backend.settlement_service import get_business_settlement_summary
 
 router = APIRouter(prefix="/api/payments", tags=["UPI Payments"])
 
@@ -189,19 +193,27 @@ def get_business_payments(
 
     all_payments = payments_col.find(query)
 
-    results = []
     for p in all_payments:
+        # Determine normalized display mode
+        is_razorpay = (p.get("payment_method") or "").upper() == "RAZORPAY" or p.get("mode") in ("test", "live")
+        if p.get("plan_id"):
+            display_mode = "SUBSCRIPTION"
+        elif is_razorpay:
+            display_mode = "ONLINE"
+        else:
+            display_mode = (p.get("payment_mode") or p.get("mode") or "UPI").upper()
+
         if mode and mode != "ALL":
-            p_mode = (p.get("mode") or p.get("payment_mode") or "UPI").lower()
-            # Subscription payments have plan_id but no mode, treat them as SUBSCRIPTION
-            if p.get("plan_id"):
-                p_mode = "subscription"
-            if p_mode != mode.lower():
+            target_mode = mode.upper()
+            if target_mode in ("ONLINE", "CARD") and is_razorpay:
+                pass
+            elif target_mode != display_mode and target_mode != (p.get("payment_method") or "").upper():
                 continue
+
         if search:
             q = search.lower()
             found = False
-            for field in ["payment_id", "id", "order_id", "transaction_reference", "customer_name", "customer_phone", "plan_id"]:
+            for field in ["payment_id", "id", "order_id", "transaction_reference", "customer_name", "customer_phone", "plan_id", "razorpay_order_id", "razorpay_payment_id"]:
                 val = str(p.get(field) or "").lower()
                 if q in val:
                     found = True
@@ -214,7 +226,11 @@ def get_business_payments(
         if date_to:
             if p.get("created_at") and p["created_at"] > date_to + "T23:59:59":
                 continue
-        results.append(p)
+
+        p_copy = dict(p)
+        p_copy["mode"] = display_mode
+        p_copy["customer_name"] = p.get("customer_name") or "Walk-in"
+        results.append(p_copy)
 
     sort_key = sort_by if sort_by in ["created_at", "amount", "status", "payment_id"] else "created_at"
     reverse = sort_dir == "desc"
@@ -375,6 +391,12 @@ class RazorpayVerifyRequest(BaseModel):
     order_id: str
 
 
+class RazorpayFailureRequest(BaseModel):
+    razorpay_order_id: str
+    error_code: Optional[str] = None
+    error_description: Optional[str] = None
+
+
 @router.post("/razorpay/create")
 def create_razorpay_order(req: RazorpayOrderRequest, request: Request, current_user: dict = Depends(get_current_user)):
     """
@@ -470,6 +492,7 @@ def verify_razorpay_payment_route(req: RazorpayVerifyRequest, current_user: dict
             razorpay_signature=req.razorpay_signature,
             order_id=req.order_id,
             customer_id=customer_id,
+            user_id=current_user.get("id"),
             role=role
         )
         return result
@@ -477,6 +500,55 @@ def verify_razorpay_payment_route(req: RazorpayVerifyRequest, current_user: dict
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to verify Razorpay payment: {str(e)}")
+
+
+@router.post("/razorpay/failure")
+def record_razorpay_failure_route(req: RazorpayFailureRequest, current_user: dict = Depends(get_current_user)):
+    """Records client-reported payment cancellation or failure."""
+    return record_razorpay_payment_failure(
+        razorpay_order_id=req.razorpay_order_id,
+        error_code=req.error_code,
+        error_description=req.error_description,
+    )
+
+
+@router.post("/razorpay/webhook")
+@router.post("/webhook/razorpay")
+async def razorpay_webhook_route(request: Request):
+    """
+    Asynchronous Razorpay Webhook processor.
+    Validates webhook signature and safely updates payment state.
+    """
+    raw_body = await request.body()
+    signature = request.headers.get("x-razorpay-signature") or request.headers.get("X-Razorpay-Signature") or ""
+    
+    if not signature or not verify_razorpay_webhook_signature(raw_body, signature):
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+    
+    try:
+        import json
+        event_payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    
+    result = process_razorpay_webhook_event(event_payload)
+    return result
+
+
+@router.get("/business/settlement")
+def get_business_settlement_route(current_user: dict = Depends(get_current_user)):
+    """Returns verified settlement overview and Route status for the business."""
+    role = (current_user.get("role") or "").upper()
+    if role not in (ROLE_BUSINESS_OWNER, ROLE_SUPER_ADMIN, ROLE_STAFF):
+        raise HTTPException(status_code=403, detail="Business owner access required.")
+
+    biz = get_collection("businesses").find_one({"owner_id": current_user["id"]})
+    if not biz:
+        biz = get_collection("businesses").find_one({"id": current_user.get("business_id")})
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found.")
+
+    return get_business_settlement_summary(biz["id"])
 
 
 @router.get("/razorpay/{razorpay_order_id}")

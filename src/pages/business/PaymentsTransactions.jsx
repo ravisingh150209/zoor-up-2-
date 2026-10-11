@@ -471,6 +471,11 @@ export const PaymentsTransactions = () => {
               <div>
                 <label style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase' }}>Amount</label>
                 <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#1A2B49' }}>₹{Number(selectedPayment.amount || 0).toFixed(2)}</div>
+                {Number(selectedPayment.commission_amount || 0) > 0 && (
+                  <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '2px' }}>
+                    Fee: ₹{Number(selectedPayment.commission_amount).toFixed(2)} • Net: ₹{Number(selectedPayment.net_amount || (selectedPayment.amount - selectedPayment.commission_amount)).toFixed(2)}
+                  </div>
+                )}
               </div>
               <div>
                 <label style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase' }}>Mode</label>
