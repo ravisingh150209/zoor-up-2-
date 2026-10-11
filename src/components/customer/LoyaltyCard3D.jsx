@@ -60,7 +60,7 @@ export const LoyaltyCard3D = ({
 
   // Determine Current Tier details (Level 1 to 5)
   const currentLevel = levelInfo?.currentLevel || 1;
-  const currentTierName = (levelInfo?.currentTier?.name || 'BASIC').toUpperCase();
+  const currentTierName = (levelInfo?.currentTier?.name || levelInfo?.currentTier?.rank || 'BASIC').toUpperCase();
 
   // Tier Theme Config
   const getTierTheme = (level, name) => {
@@ -498,7 +498,7 @@ export const LoyaltyCard3D = ({
                     Available Points
                   </span>
                   <div style={{ fontSize: '1.6rem', fontWeight: 800, color: theme.accent, lineHeight: 1.1, letterSpacing: '-0.01em' }}>
-                    {points.toLocaleString()} <span style={{ fontSize: '0.85rem', fontWeight: 600, color: theme.subAccent }}>PTS</span>
+                    {(Number(points) || 0).toLocaleString()} <span style={{ fontSize: '0.85rem', fontWeight: 600, color: theme.subAccent }}>PTS</span>
                   </div>
                 </div>
               </div>

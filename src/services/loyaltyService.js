@@ -135,10 +135,11 @@ export const loyaltyService = {
 
   // Configurable Loyalty Levels & Progression
   getLevelInfo: (points = 0, customTiers = null) => {
-    const tiers = (customTiers && customTiers.length >= 5) ? customTiers : LOYALTY_LEVELS;
+    const tiers = (customTiers && Array.isArray(customTiers) && customTiers.length >= 5) ? customTiers : LOYALTY_LEVELS;
     const pts = Math.max(0, Number(points) || 0);
-    const currentTier = tiers.find(l => pts >= (l.minPoints ?? l.min_points ?? 0) && ((l.maxPoints ?? l.max_points) === Infinity || (l.maxPoints ?? l.max_points) === null || pts <= (l.maxPoints ?? l.max_points))) || tiers[0];
-    const currentIndex = tiers.indexOf(currentTier);
+    const matchedTier = tiers.find(l => pts >= (l.minPoints ?? l.min_points ?? 0) && ((l.maxPoints ?? l.max_points) === Infinity || (l.maxPoints ?? l.max_points) === null || pts <= (l.maxPoints ?? l.max_points)));
+    const currentTier = matchedTier || tiers[0] || LOYALTY_LEVELS[0];
+    const currentIndex = Math.max(0, tiers.indexOf(currentTier));
     const nextTier = tiers[currentIndex + 1] || null;
 
     let progress = 100;
@@ -155,15 +156,15 @@ export const loyaltyService = {
       pointsNeeded = Math.max(0, nextMin - pts);
     }
 
-    const normCurrentTier = currentTier ? { ...currentTier, rank: currentTier.name || currentTier.rank || 'BASIC' } : null;
+    const normCurrentTier = { ...currentTier, rank: currentTier.name || currentTier.rank || 'BASIC' };
     const normNextTier = nextTier ? { ...nextTier, rank: nextTier.name || nextTier.rank || '' } : null;
 
     return {
-      currentLevel: currentTier.level,
+      currentLevel: currentTier.level || 1,
       currentTier: normCurrentTier,
       nextTier: normNextTier,
-      progress,
-      pointsNeeded,
+      progress: Math.min(100, Math.max(0, progress)),
+      pointsNeeded: Math.max(0, pointsNeeded),
       totalPoints: pts,
     };
   },

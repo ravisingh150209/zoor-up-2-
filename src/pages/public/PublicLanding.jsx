@@ -24,6 +24,7 @@ import { ZoorUpLogo } from '../../components/ui/ZoorUpLogo';
 import { PublicNavbar } from '../../components/layout/PublicNavbar';
 import { DEFAULT_PLANS } from '../../services/storageSeed';
 import { useAuth } from '../../context/AuthContext';
+import { authStorage } from '../../auth/authStorage';
 
 export const PublicLanding = () => {
   const { user, loading, isAuthenticated } = useAuth();
@@ -41,6 +42,20 @@ export const PublicLanding = () => {
       }
     }
   }, [user, loading, isAuthenticated, navigate]);
+
+  // If a session token exists or authentication is still resolving, show a clean loading skeleton instead of flashing the landing page
+  if (loading && authStorage.getToken()) {
+    return (
+      <div style={{ minHeight: '100vh', background: 'var(--bg-app)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+          <ZoorUpLogo size="lg" width={64} height={64} priority />
+          <div style={{ width: '120px', height: '6px', background: '#E2E8F0', borderRadius: '999px', overflow: 'hidden' }}>
+            <div style={{ width: '60%', height: '100%', background: '#F59E0B', animation: 'pulse 1.5s infinite' }} />
+          </div>
+        </div>
+      </div>
+    );
+  }
   const verticals = [
     'Grocery & Supermarket',
     'Restaurants & Cafes',

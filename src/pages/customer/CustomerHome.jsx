@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
+import confetti from 'canvas-confetti';
 import {
   Sparkles,
   QrCode,
@@ -40,6 +41,17 @@ import { Modal } from '../../components/ui/Modal';
 import { EmptyState } from '../../components/ui/States';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
+
+const formatVisitDateTime = (ts) => {
+  if (!ts) return 'Recent Visit';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return 'Recent Visit';
+    return `${d.toLocaleDateString()} at ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  } catch {
+    return 'Recent Visit';
+  }
+};
 
 export const CustomerHome = () => {
   const { user } = useAuth();
@@ -84,21 +96,30 @@ export const CustomerHome = () => {
   const celebratedRef = useRef(false);
   const inFlightRef = useRef(false);
 
-  const customerId = profile?.customer_id || user?.customer_id;
+  const customerId = profile?.customer_id || user?.customer_id || '';
   const customerName = profile?.name || user?.name || 'Customer';
-  const customerPoints = selectedBusinessId && loyaltyStatus ? Number(loyaltyStatus.points ?? 0) : Number(profile?.points ?? user?.points ?? 0);
-  const customerStamps = selectedBusinessId && loyaltyStatus ? Number(loyaltyStatus.stamps ?? 0) : Number(profile?.stamps ?? user?.stamps ?? 0);
-  const totalVisits = Number(profile?.total_visits ?? profile?.visits ?? visits.length ?? 0);
-  const lifetimePoints = Number(profile?.lifetime_points ?? customerPoints);
-  const isNewCustomer = customerPoints === 0 && customerStamps === 0 && visits.length === 0;
+  const customerPoints = Math.max(0, Number(selectedBusinessId && loyaltyStatus ? (loyaltyStatus.points ?? 0) : (profile?.points ?? user?.points ?? 0)) || 0);
+  const customerStamps = Math.max(0, Number(selectedBusinessId && loyaltyStatus ? (loyaltyStatus.stamps ?? 0) : (profile?.stamps ?? user?.stamps ?? 0)) || 0);
+  const totalVisits = Math.max(0, Number(profile?.total_visits ?? profile?.visits ?? (visits?.length || 0)) || 0);
+  const lifetimePoints = Math.max(0, Number(profile?.lifetime_points ?? customerPoints) || 0);
+  const isNewCustomer = customerPoints === 0 && customerStamps === 0 && (visits?.length || 0) === 0;
 
   // Real authoritative loyalty level calculation from backend status or configured tiers
-  const levelInfo = loyaltyService.getLevelInfo(customerPoints, loyaltyStatus?.tiers);
+  const levelInfo = loyaltyService.getLevelInfo(customerPoints, loyaltyStatus?.tiers) || {
+    currentLevel: 1,
+    currentTier: { level: 1, name: 'BASIC', rank: 'BASIC', perk: '1x Points on Purchases' },
+    nextTier: null,
+    progress: 0,
+    pointsNeeded: 500,
+    totalPoints: 0
+  };
   if (loyaltyStatus?.level) {
-    levelInfo.currentLevel = loyaltyStatus.level;
-    if (loyaltyStatus.level_name && levelInfo?.currentTier) {
-      levelInfo.currentTier.name = loyaltyStatus.level_name;
-    }
+    levelInfo.currentLevel = Number(loyaltyStatus.level) || 1;
+  }
+  const statusTierName = loyaltyStatus?.level_name || loyaltyStatus?.tier;
+  if (statusTierName && levelInfo?.currentTier) {
+    levelInfo.currentTier.name = statusTierName;
+    levelInfo.currentTier.rank = statusTierName;
   }
 
   useEffect(() => {
@@ -454,6 +475,15 @@ export const CustomerHome = () => {
 
   // Render Friendly Error State (Section 19: "Unable to load your loyalty card." with [Retry])
   if (error) {
+    const isAuthError = Boolean(
+      error && (
+        error.toLowerCase().includes('session expired') ||
+        error.toLowerCase().includes('log in') ||
+        error.toLowerCase().includes('unauthorized') ||
+        error.toLowerCase().includes('401')
+      )
+    );
+
     return (
       <div style={{ padding: '3.5rem 1.5rem', textAlign: 'center', maxWidth: '480px', margin: '0 auto' }}>
         <div
@@ -473,44 +503,35 @@ export const CustomerHome = () => {
           <AlertCircle size={32} />
         </div>
         <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#1A2B49', marginBottom: '0.5rem' }}>
-          Unable to load your loyalty card.
+          {isAuthError ? 'Session Expired' : 'Unable to load your loyalty card.'}
         </h3>
         <p style={{ fontSize: '0.875rem', color: '#64748B', marginBottom: '1.5rem' }}>
           {error}
         </p>
-        <Button
-          variant="primary"
-          onClick={loadAllDashboardData}
-          icon={RefreshCw}
-          style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
-        >
-          Retry
-        </Button>
+        {isAuthError ? (
+          <Button
+            variant="primary"
+            onClick={() => navigate('/login')}
+            icon={RefreshCw}
+            style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
+          >
+            Log In Again
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            onClick={loadAllDashboardData}
+            icon={RefreshCw}
+            style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
+          >
+            Retry
+          </Button>
+        )}
       </div>
     );
   }
 
   const hasBusinessSelection = businesses.length > 0 && selectedBusinessId;
-  if (businesses.length === 0) {
-    return (
-      <div style={{ maxWidth: '660px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1rem', padding: '2rem 1rem' }}>
-        <div className="card" style={{ padding: '1.5rem', borderRadius: '18px', background: '#FFFFFF', border: '1px solid #E2E8F0' }}>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#1A2B49', margin: '0 0 0.5rem' }}>No store connected yet</h3>
-          <p style={{ margin: 0, color: '#64748B' }}>
-            Scan a ZOOR UP QR code at a store to connect and start earning rewards.
-          </p>
-        </div>
-        <Button
-          variant="primary"
-          onClick={() => navigate('/customer/scan-qr')}
-          icon={QrCode}
-          style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
-        >
-          Scan Store QR to Connect
-        </Button>
-      </div>
-    );
-  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem', maxWidth: '920px', margin: '0 auto', width: '100%', padding: '0 0.25rem 2rem' }}>
@@ -546,6 +567,58 @@ export const CustomerHome = () => {
           </Badge>
         </div>
       </div>
+
+      {/* Empty Store Connected Banner */}
+      {businesses.length === 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '1rem',
+            padding: '1rem 1.25rem',
+            background: '#F8FAFC',
+            border: '1.5px solid #E2E8F0',
+            borderRadius: '16px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div
+              style={{
+                width: '38px',
+                height: '38px',
+                borderRadius: '10px',
+                background: '#EFF6FF',
+                color: '#2563EB',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <Store size={20} />
+            </div>
+            <div>
+              <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#1A2B49' }}>
+                No store connected yet
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#64748B' }}>
+                Scan a ZOOR UP QR code at any participating store to start collecting stamps & rewards.
+              </div>
+            </div>
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => navigate('/customer/scan-qr')}
+            icon={QrCode}
+            style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
+          >
+            Scan Store QR
+          </Button>
+        </div>
+      )}
 
       {/* Store Switcher - Multi-Store Support */}
       {businesses.length > 0 && (
@@ -659,10 +732,10 @@ export const CustomerHome = () => {
             </div>
           </div>
           <div style={{ fontSize: '1.45rem', fontWeight: 800, color: '#1A2B49', lineHeight: 1.1 }}>
-            {customerPoints.toLocaleString()}
+            {(Number(customerPoints) || 0).toLocaleString()}
           </div>
           <span style={{ fontSize: '0.72rem', color: '#64748B' }}>
-            Lifetime: {lifetimePoints.toLocaleString()} pts
+            Lifetime: {(Number(lifetimePoints) || 0).toLocaleString()} pts
           </span>
         </div>
 
@@ -1143,7 +1216,7 @@ export const CustomerHome = () => {
                         {v.notes || 'Store Check-in Verified'}
                       </div>
                       <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
-                        {new Date(v.timestamp).toLocaleDateString()} at {new Date(v.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {formatVisitDateTime(v.timestamp || v.created_at || v.visited_at)}
                       </span>
                     </div>
                   </div>
@@ -1314,7 +1387,7 @@ export const CustomerHome = () => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                     <Badge variant="success">ACTIVE VOUCHER</Badge>
                     <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
-                      Exp: {c.expires_at}
+                      Exp: {typeof c.expires_at === 'string' ? c.expires_at.split('T')[0] : '30 days'}
                     </span>
                   </div>
                   <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.5rem' }}>
@@ -1408,7 +1481,7 @@ export const CustomerHome = () => {
                       {off.discount_type === 'PERCENTAGE' ? `${off.discount_val}% OFF` : `₹${off.discount_val} OFF`}
                     </Badge>
                     <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
-                      Exp: {off.end_date || 'Ongoing'}
+                      Exp: {typeof off.end_date === 'string' ? off.end_date.split('T')[0] : 'Ongoing'}
                     </span>
                   </div>
 
@@ -1766,10 +1839,14 @@ export const CustomerHome = () => {
                   size="sm"
                   icon={copiedStoreUpi ? CheckCircle2 : Copy}
                   onClick={() => {
-                    navigator.clipboard.writeText(upiSettings.upi_id);
-                    setCopiedStoreUpi(true);
-                    addToast('Store UPI ID copied to clipboard', 'info');
-                    setTimeout(() => setCopiedStoreUpi(false), 2000);
+                    if (upiSettings?.upi_id && navigator.clipboard?.writeText) {
+                      navigator.clipboard.writeText(upiSettings.upi_id).catch(() => {});
+                      setCopiedStoreUpi(true);
+                      addToast('Store UPI ID copied to clipboard', 'info');
+                      setTimeout(() => setCopiedStoreUpi(false), 2000);
+                    } else if (upiSettings?.upi_id) {
+                      addToast(`UPI ID: ${upiSettings.upi_id}`, 'info');
+                    }
                   }}
                 >
                   {copiedStoreUpi ? 'Copied' : 'Copy Store UPI ID'}

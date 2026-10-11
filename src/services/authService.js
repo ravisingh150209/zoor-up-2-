@@ -4,7 +4,7 @@ import { authStorage, AUTH_TOKEN_KEY, AUTH_USER_KEY } from '../auth/authStorage.
 // Active OTP store key
 const OTP_STORE_KEY = 'zoorup_otp_store_v1';
 
-import { API_BASE_URL } from '../config/api.js';
+import { API_BASE_URL, fetchWithTimeout } from '../config/api.js';
 
 const getStorageInstance = () => {
   if (typeof localStorage !== 'undefined') return localStorage;
@@ -110,12 +110,12 @@ export const authService = {
     const backendUrl = API_BASE_URL || (typeof window !== 'undefined' && window.location?.origin ? window.location.origin : '');
     const meUrl = backendUrl ? `${backendUrl.replace(/\/+$/, '')}/api/auth/me` : '/api/auth/me';
     try {
-      const resp = await fetch(meUrl, {
+      const resp = await fetchWithTimeout(meUrl, {
         headers: {
           'Accept': 'application/json',
           'Authorization': `Bearer ${token}`
         }
-      });
+      }, 8000);
 
       if (resp.ok) {
         const data = await resp.json();
@@ -141,19 +141,19 @@ export const authService = {
       }
 
       // Non-401 HTTP error (e.g., 500, 502, 503) - maintain session if cached user exists
-      if (cachedUser) {
+      const fallbackUser = cachedUser || authService.getCurrentUser();
+      if (fallbackUser) {
         console.warn(`[AUTH] Non-401 response (${resp.status}) from /api/auth/me, retaining cached user.`);
-        return { user: cachedUser, business: null, error: null };
+        return { user: fallbackUser, business: null, error: null };
       }
     } catch (err) {
-      // Network error or backend cold-start: maintain session if cached user exists
-      if (cachedUser) {
+      // Network error, timeout or backend cold-start: maintain session if cached user exists
+      const fallbackUser = cachedUser || authService.getCurrentUser();
+      if (fallbackUser) {
         console.warn('[AUTH] Session validation network issue, maintaining cached session:', err);
-        return { user: cachedUser, business: null, error: null };
+        return { user: fallbackUser, business: null, error: null };
       }
-      if (isProductionEnvironment()) {
-        return { user: null, error: 'Authentication service is unavailable. Please try again.' };
-      }
+      return { user: null, error: 'Authentication service is unavailable. Please try again.' };
     }
 
     // 2. Fallback: If cached user exists, keep user logged in!

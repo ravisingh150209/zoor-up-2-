@@ -2,7 +2,7 @@ import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
 // Providers
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import { CartProvider } from './context/CartContext';
 
@@ -82,6 +82,31 @@ const PageSkeleton = () => (
   </div>
 );
 
+// Authoritative Startup Route: Resolves startup routing without flashing landing page during auth initialization
+function StartupRoute() {
+  const { user, loading, isAuthenticated } = useAuth();
+
+  if (loading) {
+    return <PageSkeleton />;
+  }
+
+  if (isAuthenticated && user) {
+    const role = (user.role || '').toLowerCase();
+    if (role === 'customer') {
+      return <Navigate to="/customer" replace />;
+    }
+    if (role === 'business' || role === 'business_owner' || role === 'staff') {
+      return <Navigate to="/business" replace />;
+    }
+    if (role === 'admin' || role === 'super_admin') {
+      return <Navigate to="/admin" replace />;
+    }
+    return <Navigate to="/customer" replace />;
+  }
+
+  return <PublicLanding />;
+}
+
 export function App() {
   return (
     <BrowserRouter>
@@ -90,8 +115,8 @@ export function App() {
           <ToastProvider>
             <CartProvider>
               <Routes>
-              {/* Marketing & Landing */}
-              <Route path="/" element={<PublicLanding />} />
+              {/* Startup & Marketing Landing */}
+              <Route path="/" element={<StartupRoute />} />
 
               {/* Standard ZOOR UP QR Routes */}
               <Route path="/b/:businessId" element={<PublicBusinessHub />} />

@@ -4,27 +4,46 @@ import { authService } from '../services/authService';
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // Synchronously initialize user from storage so session is available immediately on render 1
+  const [user, setUser] = useState(() => authService.getCurrentUser());
+  const [loading, setLoading] = useState(() => Boolean(authService.getToken()));
 
   useEffect(() => {
+    let isMounted = true;
     // Check and validate persisted session on application startup
     const initAuth = async () => {
+      const token = authService.getToken();
+      if (!token) {
+        if (isMounted) {
+          setUser(null);
+          setLoading(false);
+        }
+        return;
+      }
+
       try {
         const res = await authService.getMe();
+        if (!isMounted) return;
         if (res.user) {
           setUser(res.user);
+        } else if (res.error && (res.error.includes('expired') || res.error.includes('Session expired'))) {
+          // Genuine 401: token revoked or expired
+          setUser(null);
         } else {
-          // Check cached user in storage before marking as null
+          // Fall back to cached user in storage
           const cached = authService.getCurrentUser();
           setUser(cached || null);
         }
       } catch (e) {
         console.error('Session verification error', e);
-        const cached = authService.getCurrentUser();
-        setUser(cached || null);
+        if (isMounted) {
+          const cached = authService.getCurrentUser();
+          setUser(cached || null);
+        }
       } finally {
-        setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     };
     initAuth();
