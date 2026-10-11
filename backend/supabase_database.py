@@ -380,9 +380,20 @@ class SupabaseCollection:
                 doc["status"] = "canceled" if s == "cancelled" else (s if s in ("active", "past_due", "canceled", "incomplete", "trialing") else "active")
         elif self.table_name in ("payments", "invoices", "table_reservations", "visits"):
             if "status" in doc and isinstance(doc["status"], str):
-                doc["status"] = doc["status"].lower()
+                s = doc["status"].lower()
+                if self.table_name == "payments" and s == "created":
+                    s = "pending"
+                doc["status"] = s
             if "payment_status" in doc and isinstance(doc["payment_status"], str):
-                doc["payment_status"] = doc["payment_status"].lower()
+                ps = doc["payment_status"].lower()
+                if ps == "created":
+                    ps = "pending"
+                doc["payment_status"] = ps
+        elif self.table_name == "orders":
+            if "payment_status" in doc and isinstance(doc["payment_status"], str):
+                ps = doc["payment_status"].lower()
+                if ps == "created":
+                    doc["payment_status"] = "pending"
         elif self.table_name in ("vouchers", "customer_vouchers"):
             if not doc.get("code"):
                 doc["code"] = f"VCH-{uuid.uuid4().hex[:8].upper()}"
@@ -471,9 +482,20 @@ class SupabaseCollection:
                 values["status"] = "canceled" if s == "cancelled" else (s if s in ("active", "past_due", "canceled", "incomplete", "trialing") else "active")
         elif self.table_name in ("payments", "invoices", "table_reservations", "visits"):
             if "status" in values and isinstance(values["status"], str):
-                values["status"] = values["status"].lower()
+                s = values["status"].lower()
+                if self.table_name == "payments" and s == "created":
+                    s = "pending"
+                values["status"] = s
             if "payment_status" in values and isinstance(values["payment_status"], str):
-                values["payment_status"] = values["payment_status"].lower()
+                ps = values["payment_status"].lower()
+                if ps == "created":
+                    ps = "pending"
+                values["payment_status"] = ps
+        elif self.table_name == "orders":
+            if "payment_status" in values and isinstance(values["payment_status"], str):
+                ps = values["payment_status"].lower()
+                if ps == "created":
+                    values["payment_status"] = "pending"
 
         # Map known custom business attributes into metadata JSONB column for PostgreSQL persistence
         if self.table_name in ("businesses", "stores"):

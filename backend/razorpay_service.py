@@ -132,7 +132,7 @@ def save_razorpay_payment_record(
         "razorpay_order_id": razorpay_order_id,
         "razorpay_payment_id": razorpay_payment_id,
         "razorpay_signature": razorpay_signature,
-        "status": status,
+        "status": "pending" if status == "created" else status,
         "verified": verified,
         "mode": RAZORPAY_MODE,
         "created_at": now_iso,
@@ -167,7 +167,7 @@ def create_razorpay_order_for_payment(
     """
     Create Razorpay order and save initial payment record.
     Returns dict with payment_id, razorpay_order_id, razorpay_key_id, amount, currency, amount_paise, status, mode.
-    Idempotent: returns existing 'created' status payment for the same order instead of creating a new one.
+    Idempotent: returns existing 'pending' status payment for the same order instead of creating a new one.
     """
     orders_col = get_collection("orders")
     payments_col = get_collection("payments")
@@ -190,19 +190,19 @@ def create_razorpay_order_for_payment(
     if existing_paid:
         raise ValueError("This order has already been paid")
     
-    # Check for existing 'created' status payment (idempotency - return existing Razorpay order)
-    existing_created = payments_col.find_one({"order_id": order.get("id"), "status": "created", "payment_method": "RAZORPAY"})
-    if existing_created and existing_created.get("razorpay_order_id"):
+    # Check for existing 'pending' status payment (idempotency - return existing Razorpay order)
+    existing_pending = payments_col.find_one({"order_id": order.get("id"), "status": "pending", "payment_method": "RAZORPAY"})
+    if existing_pending and existing_pending.get("razorpay_order_id"):
         # Return existing Razorpay order details
         return {
             "success": True,
-            "payment_id": existing_created.get("payment_id"),
-            "razorpay_order_id": existing_created.get("razorpay_order_id"),
-            "razorpay_key_id": existing_created.get("razorpay_key_id") or RAZORPAY_KEY_ID,
-            "amount": existing_created.get("amount"),
+            "payment_id": existing_pending.get("payment_id"),
+            "razorpay_order_id": existing_pending.get("razorpay_order_id"),
+            "razorpay_key_id": existing_pending.get("razorpay_key_id") or RAZORPAY_KEY_ID,
+            "amount": existing_pending.get("amount"),
             "currency": "INR",
-            "amount_paise": int(round(existing_created.get("amount", 0) * 100)),
-            "status": "created",
+            "amount_paise": int(round(existing_pending.get("amount", 0) * 100)),
+            "status": "pending",
             "mode": RAZORPAY_MODE,
         }
     
@@ -222,7 +222,7 @@ def create_razorpay_order_for_payment(
         "payment_method": "RAZORPAY",
         "razorpay_order_id": razorpay_order["id"],
         "razorpay_key_id": RAZORPAY_KEY_ID,
-        "status": "created",
+        "status": "pending",
         "mode": RAZORPAY_MODE,
         "created_at": now_iso,
         "updated_at": now_iso,
@@ -237,7 +237,7 @@ def create_razorpay_order_for_payment(
         "amount": amount,
         "currency": "INR",
         "amount_paise": razorpay_order["amount"],
-        "status": "created",
+        "status": "pending",
         "mode": RAZORPAY_MODE,
     }
 
