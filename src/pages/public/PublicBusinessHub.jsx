@@ -236,7 +236,13 @@ export const PublicBusinessHub = () => {
               justifyContent: 'center',
             }}>
               {business.logo ? (
-                <img src={business.logo} alt={business.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <img
+                  src={business.logo}
+                  alt={business.name}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  loading="lazy"
+                  decoding="async"
+                />
               ) : (
                 <Store size={36} color="#1A2B49" />
               )}

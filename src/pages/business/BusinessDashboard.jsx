@@ -52,14 +52,14 @@ export const BusinessDashboard = () => {
     setLoadError('');
     try {
       const bizId = user?.business_id;
-      const result = await businessService.getDashboardStats(bizId);
-      let orders = [];
-      try {
-        orders = await orderService.getOrders(bizId);
-      } catch (orderErr) {
-        console.warn('Could not load recent orders:', orderErr);
-        orders = [];
-      }
+      // Parallelize dashboard stats and orders fetch
+      const [result, orders] = await Promise.all([
+        businessService.getDashboardStats(bizId),
+        orderService.getOrders(bizId).catch(err => {
+          console.warn('Could not load recent orders:', err);
+          return [];
+        })
+      ]);
       if (generation === requestGeneration.current) {
         setData(result);
         setRecentOrders(Array.isArray(orders) ? orders.slice(0, 5) : []);

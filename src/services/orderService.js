@@ -1,5 +1,6 @@
 import { authStorage } from '../auth/authStorage.js';
 import { isProductionEnvironment } from './storageSeed.js';
+import { getErrorMessage } from '../utils/errorUtils.js';
 
 import { API_BASE_URL as API_BASE } from '../config/api.js';
 
@@ -18,7 +19,10 @@ const request = async (path, options = {}) => {
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(data?.detail || `Order request failed with status ${response.status}`);
+    const message = getErrorMessage(data) || `Order request failed with status ${response.status}`;
+    const error = new Error(message);
+    error.response = { data };
+    throw error;
   }
   return data;
 };
@@ -26,12 +30,15 @@ const request = async (path, options = {}) => {
 const getIdempotencyKey = (orderData) => {
   const signature = JSON.stringify({
     business_id: orderData.business_id,
-    items: [...orderData.items].map(({ product_id, quantity }) => ({ product_id, quantity }))
-      .sort((a, b) => a.product_id.localeCompare(b.product_id)),
+    items: [...orderData.items]
+      .map(({ id, quantity }) => ({ id, quantity }))
+      .filter(item => item.id != null)
+      .sort((a, b) => String(a.id || '').localeCompare(String(b.id || ''))),
     order_type: orderData.order_type,
     table_id: orderData.table_id || null,
     table_number: orderData.table_number || null,
     payment_method: orderData.payment_method,
+    coupon_code: orderData.coupon_code || null,
   });
 
   if (typeof localStorage !== 'undefined') {
@@ -91,6 +98,7 @@ export const orderService = {
         table_number: orderData.table_number || null,
         customer_name: orderData.customer_name || null,
         customer_phone: orderData.customer_phone || null,
+        coupon_code: orderData.coupon_code || null,
         idempotency_key: idempotencyKey,
       }),
     });
@@ -99,6 +107,43 @@ export const orderService = {
       if (previous?.key === idempotencyKey) localStorage.removeItem('zoorup_order_attempt');
     } catch {}
     return order;
+  },
+
+  createUpiPayment: async (orderId, businessId) => {
+    return request('/api/payments/upi/create', {
+      method: 'POST',
+      body: JSON.stringify({
+        order_id: orderId,
+        business_id: businessId,
+      }),
+    });
+  },
+
+  createRazorpayOrder: async (orderId, businessId) => {
+    return request('/api/payments/razorpay/create', {
+      method: 'POST',
+      body: JSON.stringify({
+        order_id: orderId,
+        business_id: businessId,
+      }),
+    });
+  },
+
+  verifyRazorpayPayment: async (data) => {
+    return request('/api/payments/razorpay/verify', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  getPaymentById: async (paymentId) => {
+    if (!paymentId) throw new Error('Payment ID is required.');
+    return request(`/api/payments/upi/${encodeURIComponent(paymentId)}`);
+  },
+
+  getRazorpayPaymentStatus: async (razorpayOrderId) => {
+    if (!razorpayOrderId) throw new Error('Razorpay Order ID is required.');
+    return request(`/api/payments/razorpay/${encodeURIComponent(razorpayOrderId)}`);
   },
 
   updateOrderStatus: async (orderId, orderStatus) => request(

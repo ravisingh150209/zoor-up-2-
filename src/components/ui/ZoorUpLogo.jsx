@@ -54,6 +54,7 @@ export const ZoorUpLogo = ({
         width={finalWidth}
         height={finalHeight}
         loading={priority ? 'eager' : 'lazy'}
+        decoding="async"
         style={{
           width: typeof finalWidth === 'number' ? `${finalWidth}px` : finalWidth,
           height: typeof finalHeight === 'number' ? `${finalHeight}px` : finalHeight,

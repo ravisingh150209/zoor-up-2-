@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Store, MapPin, Clock, ExternalLink, Save, Phone, Mail, Globe, CheckCircle2, Image as ImageIcon } from 'lucide-react';
+import { Store, MapPin, Clock, ExternalLink, Save, Phone, Mail, Globe, CheckCircle2, Image as ImageIcon, CreditCard, ToggleLeft, ToggleRight, Shield } from 'lucide-react';
 import { businessService } from '../../services/businessService';
 import { uploadService } from '../../services/uploadService';
 import { Input } from '../../components/ui/Input';
@@ -18,11 +18,25 @@ export const BusinessProfile = () => {
   const { addToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [upiSaving, setUpiSaving] = useState(false);
   const [business, setBusiness] = useState(null);
+  const [upiSettings, setUpiSettings] = useState({
+    upi_id: '',
+    upi_name: '',
+    upi_notes: 'ZOOR UP Store Payment',
+    upi_enabled: false,
+  });
+  const [upiLoaded, setUpiLoaded] = useState(false);
 
   useEffect(() => {
     loadProfile();
   }, [user]);
+
+  useEffect(() => {
+    if (business) {
+      loadUpiSettings();
+    }
+  }, [business, user]);
 
   const loadProfile = async () => {
     setLoading(true);
@@ -60,6 +74,68 @@ export const BusinessProfile = () => {
       console.error(e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadUpiSettings = async () => {
+    if (!user?.business_id) return;
+    setUpiLoaded(false);
+    try {
+      const data = await businessService.getBusinessUpi(user?.business_id);
+      if (data && data.success) {
+        setUpiSettings({
+          upi_id: data.upi_id || '',
+          upi_name: data.upi_name || '',
+          upi_notes: data.upi_notes || 'ZOOR UP Store Payment',
+          upi_enabled: data.upi_enabled || false,
+        });
+      }
+    } catch (e) {
+      console.error('Failed to load UPI settings:', e);
+    } finally {
+      setUpiLoaded(true);
+    }
+  };
+
+  // Sync upiSettings with business object when business loads
+  useEffect(() => {
+    if (business && !upiLoaded) {
+      const upiId = business.upi_id || '';
+      const upiName = business.upi_name || business.name || '';
+      const upiNotes = business.upi_notes || 'ZOOR UP Store Payment';
+      const upiEnabled = !!upiId;
+      setUpiSettings({
+        upi_id: upiId,
+        upi_name: upiName,
+        upi_notes: upiNotes,
+        upi_enabled: upiEnabled,
+      });
+    }
+  }, [business, upiLoaded]);
+
+  const handleUpiUpdate = async (e) => {
+    e.preventDefault();
+    setUpiSaving(true);
+    try {
+      const upiData = {
+        upi_id: upiSettings.upi_id,
+        upi_name: upiSettings.upi_name,
+        upi_notes: upiSettings.upi_notes,
+        upi_enabled: upiSettings.upi_enabled,
+      };
+      const result = await businessService.updateBusinessUpi(user?.business_id, upiData);
+      if (result.success) {
+        setUpiSettings(prev => ({ ...prev, ...upiData }));
+        addToast('UPI settings saved successfully!', 'success');
+      } else {
+        addToast(result.detail || 'Failed to save UPI settings', 'error');
+      }
+    } catch (e) {
+      console.error('UPI save error:', e);
+      const errMsg = e?.response?.data?.detail || e?.detail || e?.message || 'Error saving UPI settings';
+      addToast(errMsg, 'error');
+    } finally {
+      setUpiSaving(false);
     }
   };
 
@@ -462,12 +538,6 @@ export const BusinessProfile = () => {
               value={business.working_days || ''}
               onChange={(e) => setBusiness({ ...business, working_days: e.target.value })}
             />
-            <Input
-              label="Merchant UPI VPA ID (For Instant Customer Payments)"
-              placeholder="e.g. storename@okaxis"
-              value={business.upi_id || ''}
-              onChange={(e) => setBusiness({ ...business, upi_id: e.target.value })}
-            />
           </div>
 
           <div style={{ display: 'flex', gap: '2rem', marginTop: '1rem', flexWrap: 'wrap' }}>
@@ -490,6 +560,56 @@ export const BusinessProfile = () => {
               />
               <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Enable In-Store Pickup</span>
             </label>
+          </div>
+        </Card>
+
+{/* UPI Payment Settings Card */}
+        <Card>
+          <CardHeader title="UPI Payment Settings" icon={CreditCard} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <div className="grid-2">
+              <Input
+                label="Merchant UPI ID (VPA)"
+                placeholder="e.g. storename@okaxis, 9817400078@ybl"
+                value={upiSettings.upi_id}
+                onChange={(e) => setUpiSettings({ ...upiSettings, upi_id: e.target.value })}
+              />
+              <Input
+                label="UPI Display Name"
+                placeholder="e.g. My Store Name"
+                value={upiSettings.upi_name}
+                onChange={(e) => setUpiSettings({ ...upiSettings, upi_name: e.target.value })}
+              />
+            </div>
+
+            <Input
+              label="UPI Payment Note"
+              placeholder="Note shown to customer during payment"
+              value={upiSettings.upi_notes}
+              onChange={(e) => setUpiSettings({ ...upiSettings, upi_notes: e.target.value })}
+            />
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={upiSettings.upi_enabled}
+                  onChange={(e) => setUpiSettings({ ...upiSettings, upi_enabled: e.target.checked })}
+                  style={{ width: '18px', height: '18px', accentColor: 'var(--primary-500)' }}
+                />
+                <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Enable UPI Payments</span>
+              </label>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                When enabled, customers can pay instantly via UPI apps (GPay, PhonePe, Paytm, etc.)
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '0.5rem' }}>
+              <Button type="button" variant="primary" size="lg" disabled={upiSaving} onClick={handleUpiUpdate}>
+                <Save size={18} />
+                <span>{upiSaving ? 'Saving UPI Settings...' : 'Save UPI Settings'}</span>
+              </Button>
+            </div>
           </div>
         </Card>
 

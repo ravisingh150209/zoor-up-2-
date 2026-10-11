@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, Link } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -27,23 +27,25 @@ import {
   Compass,
   Home,
   Calendar,
-  X
+  X,
+  Crown
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { subscriptionService } from '../../services/subscriptionService';
+import { businessService } from '../../services/businessService';
 import { ZoorUpLogo } from '../ui/ZoorUpLogo';
 
-export const Sidebar = ({ isOpen, onClose, collapsed = false, onToggleCollapse, subData: propSubData }) => {
+export const Sidebar = ({ isOpen, onClose, collapsed = false, onToggleCollapse }) => {
   const { user } = useAuth();
   const role = user?.role || 'business';
-  const [internalSubData, setInternalSubData] = React.useState(null);
-  const subData = propSubData !== undefined ? propSubData : internalSubData;
+  const [subData, setSubData] = useState(null);
 
-  React.useEffect(() => {
-    if (propSubData === undefined && role === 'business' && user?.business_id) {
-      subscriptionService.getSubscription(user.business_id).then(setInternalSubData).catch(() => {});
+  useEffect(() => {
+    if (user?.business_id && role === 'business') {
+      businessService.getSubscription(user.business_id)
+        .then(setSubData)
+        .catch(() => setSubData({ plan: 'FREE', subscription_status: 'ACTIVE' }));
     }
-  }, [propSubData, role, user?.business_id]);
+  }, [user?.business_id, role]);
 
   // Handle ESC key press to close mobile drawer
   React.useEffect(() => {
@@ -66,7 +68,8 @@ export const Sidebar = ({ isOpen, onClose, collapsed = false, onToggleCollapse, 
     { to: '/business/rewards', icon: Gift, label: 'Rewards' },
     { to: '/business/offers', icon: Tag, label: 'Offers' },
     { to: '/business/table-booking', icon: Calendar, label: 'Table Booking' },
-    { to: '/business/payments', icon: CreditCard, label: 'Payments / Transactions' },
+    { to: '/business/payments', icon: CreditCard, label: 'Payments & Transactions' },
+    { to: '/business/subscription', icon: Crown, label: 'Subscription' },
     { to: '/business/staff', icon: UserCheck, label: 'Staff' },
     { to: '/business/settings', icon: Settings, label: 'Settings' },
   ];

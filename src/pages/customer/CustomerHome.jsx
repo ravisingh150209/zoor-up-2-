@@ -15,7 +15,6 @@ import {
   Gift,
   CheckCircle2,
   ExternalLink,
-  Smartphone,
   X,
   CreditCard,
   RefreshCw,
@@ -24,12 +23,10 @@ import {
   Calendar,
   AlertCircle
 } from 'lucide-react';
-import { QRCodeSVG } from 'qrcode.react';
-import confetti from 'canvas-confetti';
 import { loyaltyService } from '../../services/loyaltyService';
 import { customerService } from '../../services/customerService';
-import { businessService } from '../../services/businessService';
 import { notificationService } from '../../services/notificationService';
+import { getErrorMessage } from '../../utils/errorUtils';
 import { LoyaltyCard3D } from '../../components/customer/LoyaltyCard3D';
 import { LevelProgressTracker } from '../../components/customer/LevelProgressTracker';
 import { LevelUpModal } from '../../components/customer/LevelUpModal';
@@ -68,23 +65,17 @@ export const CustomerHome = () => {
   const [claiming, setClaiming] = useState(false);
   const [copiedCode, setCopiedCode] = useState(null);
 
-  // UPI Payment Modal State
-  const [isUpiModalOpen, setIsUpiModalOpen] = useState(false);
-  const [selectedBizForUpi, setSelectedBizForUpi] = useState(null);
-  const [upiSettings, setUpiSettings] = useState(null);
-  const [upiAmount, setUpiAmount] = useState('150');
-  const [upiNote, setUpiNote] = useState('ZOOR UP Bill Payment');
-  const [loadingUpi, setLoadingUpi] = useState(false);
+  const [businessLoading, setBusinessLoading] = useState(false);
 
   // Check-in Celebration State
   const [celebrationData, setCelebrationData] = useState(null);
   const celebratedRef = useRef(false);
 
-  const customerId = profile?.customer_id || user?.customer_id || (user?.id ? `ZUP-CUS-${user.id.slice(-6).toUpperCase()}` : 'ZUP-CUS-MEMBER');
+  const customerId = profile?.customer_id || user?.customer_id;
   const customerName = profile?.name || user?.name || 'Customer';
   const customerPoints = selectedBusinessId && loyaltyStatus ? Number(loyaltyStatus.points ?? 0) : Number(profile?.points ?? user?.points ?? 0);
   const customerStamps = selectedBusinessId && loyaltyStatus ? Number(loyaltyStatus.stamps ?? 0) : Number(profile?.stamps ?? user?.stamps ?? 0);
-  const totalVisits = Number(profile?.visits ?? visits.length ?? 0);
+  const totalVisits = Number(profile?.total_visits ?? profile?.visits ?? visits.length ?? 0);
   const lifetimePoints = Number(profile?.lifetime_points ?? customerPoints);
   const isNewCustomer = customerPoints === 0 && customerStamps === 0 && visits.length === 0;
 
@@ -132,6 +123,53 @@ export const CustomerHome = () => {
     }
   }, [location.state, customerId]);
 
+  // Switch business and load its loyalty/rewards/offers
+  const switchBusiness = async (newBizId) => {
+    if (!newBizId) return;
+    setSelectedBusinessId(newBizId);
+    setBusinessScopeError(null);
+    setBusinessLoading(true);
+    try {
+      const results = await Promise.allSettled([
+        loyaltyService.getBusinessLoyalty(newBizId),
+        loyaltyService.getRewards(newBizId),
+        loyaltyService.getOffers(newBizId),
+      ]);
+
+      const loyaltyResult = results[0];
+      if (loyaltyResult.status === 'fulfilled') {
+        setLoyaltyStatus(loyaltyResult.value);
+      } else {
+        console.warn('Failed to load business loyalty:', loyaltyResult.reason);
+        setLoyaltyStatus(null);
+        setBusinessScopeError(getErrorMessage(loyaltyResult.reason, 'Unable to load loyalty data.'));
+      }
+
+      const rewardsResult = results[1];
+      if (rewardsResult.status === 'fulfilled') {
+        setRewards(rewardsResult.value || []);
+      } else {
+        console.warn('Failed to load rewards:', rewardsResult.reason);
+        setRewards([]);
+      }
+
+      const offersResult = results[2];
+      if (offersResult.status === 'fulfilled') {
+        setOffers(Array.isArray(offersResult.value) ? offersResult.value.filter((o) => o.active) : []);
+      } else {
+        console.warn('Failed to load offers:', offersResult.reason);
+        setOffers([]);
+      }
+    } catch (err) {
+      setBusinessScopeError(getErrorMessage(err, 'Unable to load loyalty data.'));
+      setLoyaltyStatus(null);
+      setRewards([]);
+      setOffers([]);
+    } finally {
+      setBusinessLoading(false);
+    }
+  };
+
   const loadAllDashboardData = async () => {
     setLoading(true);
     setError(null);
@@ -141,7 +179,12 @@ export const CustomerHome = () => {
 
       if (homeData && homeData.success) {
         const cProfile = homeData.customer;
-        const connBiz = homeData.businesses || [];
+        const seenBizIds = new Set();
+        const connBiz = (homeData.businesses || []).filter(b => {
+          if (!b?.id || seenBizIds.has(b.id)) return false;
+          seenBizIds.add(b.id);
+          return true;
+        });
         setProfile(cProfile);
         setBusinesses(connBiz);
         setOrders(homeData.orders || []);
@@ -159,35 +202,60 @@ export const CustomerHome = () => {
 
         const nextSelectedBusinessId = selectedBusinessId && connBiz.some((b) => b.id === selectedBusinessId)
           ? selectedBusinessId
-          : connBiz.length === 1
-            ? connBiz[0].id
-            : null;
+          : connBiz[0].id;
 
         setSelectedBusinessId(nextSelectedBusinessId);
 
+        // Parallelize: loyalty status + rewards + claimed rewards + offers
+        // Use Promise.allSettled for resilience - non-critical failures won't block the page
         if (nextSelectedBusinessId) {
-          try {
-            const businessLoyalty = await loyaltyService.getBusinessLoyalty(nextSelectedBusinessId);
-            setLoyaltyStatus(businessLoyalty);
-          } catch (businessErr) {
-            setBusinessScopeError(businessErr.message || 'Unable to load loyalty data.');
+          const results = await Promise.allSettled([
+            loyaltyService.getBusinessLoyalty(nextSelectedBusinessId),
+            loyaltyService.getRewards(nextSelectedBusinessId),
+            loyaltyService.getClaimedRewards(cProfile?.customer_id || customerId),
+            loyaltyService.getOffers(nextSelectedBusinessId),
+          ]);
+
+          // Handle each result individually
+          const businessLoyaltyResult = results[0];
+          if (businessLoyaltyResult.status === 'fulfilled') {
+            setLoyaltyStatus(businessLoyaltyResult.value);
+          } else {
+            console.warn('Failed to load business loyalty:', businessLoyaltyResult.reason);
             setLoyaltyStatus(null);
+            setBusinessScopeError(getErrorMessage(businessLoyaltyResult.reason, 'Loyalty data temporarily unavailable'));
+          }
+
+          const rewardsResult = results[1];
+          if (rewardsResult.status === 'fulfilled') {
+            setRewards(rewardsResult.value || []);
+          } else {
+            console.warn('Failed to load rewards:', rewardsResult.reason);
+            setRewards([]);
+          }
+
+          const claimedRewardsResult = results[2];
+          if (claimedRewardsResult.status === 'fulfilled') {
+            setClaimedRewards(claimedRewardsResult.value || []);
+          } else {
+            console.warn('Failed to load claimed rewards:', claimedRewardsResult.reason);
+            setClaimedRewards([]);
+          }
+
+          const offersResult = results[3];
+          if (offersResult.status === 'fulfilled') {
+            setOffers(Array.isArray(offersResult.value) ? offersResult.value.filter((o) => o.active) : []);
+          } else {
+            console.warn('Failed to load offers:', offersResult.reason);
+            setOffers([]);
           }
         } else {
           setLoyaltyStatus(null);
           setBusinessScopeError('No business selected. Choose a connected business to view loyalty.');
+          setRewards([]);
+          setClaimedRewards([]);
+          setOffers([]);
         }
-
-        const [allRewards, allClaimed, bizOffers] = await Promise.all([
-          loyaltyService.getRewards(nextSelectedBusinessId || null),
-          loyaltyService.getClaimedRewards(cProfile?.customer_id || customerId),
-          nextSelectedBusinessId
-            ? loyaltyService.getOffers(nextSelectedBusinessId)
-            : (connBiz.length > 0 ? loyaltyService.getOffers(connBiz[0].id) : Promise.resolve([])),
-        ]);
-        setRewards(allRewards || []);
-        setClaimedRewards(allClaimed || []);
-        setOffers(Array.isArray(bizOffers) ? bizOffers.filter((o) => o.active) : []);
 
         notificationService.runReminderEngine(user).catch(() => {});
         return;
@@ -196,44 +264,9 @@ export const CustomerHome = () => {
       throw new Error('Unable to load your connected businesses.');
     } catch (err) {
       console.error('Error loading customer dashboard data:', err);
-      setError(err.message || 'Unable to load your loyalty card.');
+      setError(getErrorMessage(err, 'Unable to load your loyalty card.'));
     } finally {
       setLoading(false);
-    }
-  };
-
-  // UPI Payment Flow
-  const handleOpenUpiModal = async (business = null) => {
-    const targetBiz = business || businesses[0] || null;
-    setSelectedBizForUpi(targetBiz);
-    setIsUpiModalOpen(true);
-
-    if (targetBiz?.id) {
-      setLoadingUpi(true);
-      try {
-        const upi = await businessService.getUpiSettings(targetBiz.id);
-        setUpiSettings(upi);
-      } catch (e) {
-        console.error('Failed to load UPI config:', e);
-      } finally {
-        setLoadingUpi(false);
-      }
-    }
-  };
-
-  const handleSelectUpiBusiness = async (bizId) => {
-    const biz = businesses.find(b => b.id === bizId);
-    setSelectedBizForUpi(biz);
-    if (biz?.id) {
-      setLoadingUpi(true);
-      try {
-        const upi = await businessService.getUpiSettings(biz.id);
-        setUpiSettings(upi);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoadingUpi(false);
-      }
     }
   };
 
@@ -257,10 +290,36 @@ export const CustomerHome = () => {
         });
       } catch (e) {}
 
-      // Refresh data
-      loadAllDashboardData();
+      // Refresh only affected data: claimed rewards, rewards, and profile (points)
+      // Use Promise.allSettled for resilience
+      const refreshResults = await Promise.allSettled([
+        loyaltyService.getClaimedRewards(customerId),
+        loyaltyService.getRewards(targetBizId),
+      ]);
+
+      const claimedResult = refreshResults[0];
+      if (claimedResult.status === 'fulfilled') {
+        setClaimedRewards(claimedResult.value || []);
+      } else {
+        console.warn('Failed to refresh claimed rewards:', claimedResult.reason);
+      }
+
+      const rewardsResult = refreshResults[1];
+      if (rewardsResult.status === 'fulfilled') {
+        setRewards(rewardsResult.value || []);
+      } else {
+        console.warn('Failed to refresh rewards:', rewardsResult.reason);
+      }
+
+      // Refresh profile to get updated points
+      try {
+        const freshProfile = await customerService.getProfile(user);
+        if (freshProfile) setProfile(freshProfile);
+      } catch (profileErr) {
+        console.warn('Failed to refresh profile:', profileErr);
+      }
     } catch (err) {
-      addToast(err.message || 'Could not claim reward', 'error');
+      addToast(getErrorMessage(err, 'Could not claim reward'), 'error');
     } finally {
       setClaiming(false);
     }
@@ -272,16 +331,6 @@ export const CustomerHome = () => {
     addToast(`Voucher code "${code}" copied to clipboard!`, 'info');
     setTimeout(() => setCopiedCode(null), 3000);
   };
-
-  // Generate UPI URL
-  const upiPaymentUrl = upiSettings?.upi_id
-    ? businessService.generateUpiPaymentUrl({
-        upi_id: upiSettings.upi_id,
-        upi_name: upiSettings.upi_name || selectedBizForUpi?.name || 'Store Merchant',
-        amount: upiAmount || '0',
-        note: upiNote || 'Store Payment',
-      })
-    : '';
 
   // Stamp progress calculations
   const totalStampsRequired = 10;
@@ -356,32 +405,30 @@ export const CustomerHome = () => {
     );
   }
 
+  useEffect(() => {
+    if (businesses.length > 0 && !selectedBusinessId) {
+      switchBusiness(businesses[0].id);
+    }
+  }, [businesses, selectedBusinessId]);
+
   const hasBusinessSelection = businesses.length > 0 && selectedBusinessId;
-  if (!hasBusinessSelection && businesses.length > 0) {
+  if (businesses.length === 0) {
     return (
       <div style={{ maxWidth: '660px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1rem', padding: '2rem 1rem' }}>
         <div className="card" style={{ padding: '1.5rem', borderRadius: '18px', background: '#FFFFFF', border: '1px solid #E2E8F0' }}>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#1A2B49', margin: '0 0 0.5rem' }}>No business selected</h3>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#1A2B49', margin: '0 0 0.5rem' }}>No store connected yet</h3>
           <p style={{ margin: 0, color: '#64748B' }}>
-            Choose a connected business to view points, stamps, and rewards.
+            Scan a ZOOR UP QR code at a store to connect and start earning rewards.
           </p>
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
-          {businesses.map((biz) => (
-            <Button key={biz.id} variant="secondary" onClick={() => {
-              setSelectedBusinessId(biz.id);
-              setBusinessScopeError(null);
-              loyaltyService.getBusinessLoyalty(biz.id).then((data) => setLoyaltyStatus(data)).catch((err) => setBusinessScopeError(err.message || 'Unable to load loyalty data.'));
-            }}>
-              {biz.name || 'Business'}
-            </Button>
-          ))}
-        </div>
-        {businessScopeError && (
-          <div className="card" style={{ padding: '1rem', borderRadius: '12px', border: '1px solid #FECACA', background: '#FEF2F2', color: '#991B1B' }}>
-            {businessScopeError}
-          </div>
-        )}
+        <Button
+          variant="primary"
+          onClick={() => navigate('/customer/scan-qr')}
+          icon={QrCode}
+          style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
+        >
+          Scan Store QR to Connect
+        </Button>
       </div>
     );
   }
@@ -421,50 +468,65 @@ export const CustomerHome = () => {
         </div>
       </div>
 
-      {/* Multi-Store Switcher */}
-      {businesses.length > 1 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', padding: '0.65rem 0.9rem', background: '#FFFFFF', borderRadius: '12px', border: '1px solid #E2E8F0' }}>
+      {/* Store Switcher - Multi-Store Support */}
+      {businesses.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', padding: '0.75rem 1rem', background: '#FFFFFF', borderRadius: '12px', border: '1px solid #E2E8F0' }}>
           <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#64748B' }}>
-            🏪 Connected Store:
+            🏪 Active Store:
           </span>
-          {businesses.map((biz) => {
-            const isSelected = selectedBusinessId === biz.id;
-            return (
-              <button
-                key={biz.id}
-                type="button"
-                onClick={async () => {
-                  setSelectedBusinessId(biz.id);
-                  setBusinessScopeError(null);
-                  try {
-                    const [loyal, rew, off] = await Promise.all([
-                      loyaltyService.getBusinessLoyalty(biz.id),
-                      loyaltyService.getRewards(biz.id),
-                      loyaltyService.getOffers(biz.id)
-                    ]);
-                    setLoyaltyStatus(loyal);
-                    setRewards(rew || []);
-                    setOffers(Array.isArray(off) ? off.filter(o => o.active) : []);
-                  } catch (err) {
-                    setBusinessScopeError(err.message || 'Unable to switch store');
-                  }
-                }}
-                style={{
-                  border: isSelected ? '1.5px solid #1A2B49' : '1px solid #CBD5E1',
-                  background: isSelected ? '#1A2B49' : '#F8FAFC',
-                  color: isSelected ? '#FFFFFF' : '#334155',
-                  padding: '5px 12px',
-                  borderRadius: '8px',
-                  fontSize: '0.78rem',
-                  fontWeight: isSelected ? 700 : 500,
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease'
-                }}
-              >
-                {biz.name || 'Store'}
-              </button>
-            );
-          })}
+          <select
+            value={selectedBusinessId || ''}
+            onChange={(e) => {
+              const newBizId = e.target.value;
+              if (newBizId) {
+                switchBusiness(newBizId);
+              } else {
+                setSelectedBusinessId('');
+                setBusinessScopeError('No business selected. Choose a connected business to view loyalty.');
+                setLoyaltyStatus(null);
+                setRewards([]);
+                setOffers([]);
+              }
+            }}
+            style={{
+              flex: 1,
+              minWidth: '200px',
+              maxWidth: '320px',
+              padding: '0.5rem 0.85rem',
+              borderRadius: '8px',
+              border: '1.5px solid #CBD5E1',
+              background: '#FFFFFF',
+              color: '#1A2B49',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              appearance: 'none',
+              backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")",
+              backgroundRepeat: 'no-repeat',
+              backgroundPosition: 'right 0.75rem center',
+              paddingRight: '2.5rem',
+            }}
+          >
+            {businesses.map((biz) => (
+              <option key={biz.id} value={biz.id}>
+                {biz.name} {biz.id === businesses[0].id ? '(Primary)' : ''}
+              </option>
+            ))}
+          </select>
+          {businesses.length > 1 && (
+            <span style={{ fontSize: '0.7rem', color: '#10B981', fontWeight: 600 }}>
+              {businesses.length} stores joined
+            </span>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate('/customer/scan-qr')}
+            icon={QrCode}
+            style={{ fontSize: '0.75rem', padding: '0.4rem 0.75rem' }}
+          >
+            + Add Store
+          </Button>
         </div>
       )}
 
@@ -482,6 +544,7 @@ export const CustomerHome = () => {
           totalVisits={totalVisits}
           lifetimePoints={lifetimePoints}
           joinedDate={profile?.created_at ? new Date(profile.created_at).getFullYear().toString() : '2026'}
+          loading={businessLoading}
         />
       </div>
 
@@ -1358,7 +1421,7 @@ export const CustomerHome = () => {
           />
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
-            {businesses.slice(0, 3).map((biz) => (
+            {businesses.slice(0, 1).map((biz) => (
               <div
                 key={biz.id}
                 className="card card-hover"
@@ -1497,158 +1560,6 @@ export const CustomerHome = () => {
           ))}
         </div>
       </div>
-
-      {/* =================================================================
-          11. CUSTOMER PAY BUSINESS VIA UPI MODAL (SECTIONS 20–24)
-          ================================================================= */}
-      <Modal
-        isOpen={isUpiModalOpen}
-        onClose={() => setIsUpiModalOpen(false)}
-        title="Pay Business via UPI"
-        maxWidth="500px"
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-          {/* Store Selection */}
-          <div>
-            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
-              Select Partnered Store
-            </label>
-            <select
-              value={selectedBizForUpi?.id || ''}
-              onChange={(e) => handleSelectUpiBusiness(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '0.65rem 0.85rem',
-                borderRadius: '10px',
-                border: '1.5px solid #CBD5E1',
-                fontSize: '0.9rem',
-                color: '#1A2B49',
-                outline: 'none',
-              }}
-            >
-              {businesses.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name} ({b.city})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {loadingUpi ? (
-            <div style={{ padding: '2rem', textAlign: 'center', color: '#64748B' }}>
-              Loading store UPI details...
-            </div>
-          ) : upiSettings?.upi_id ? (
-            <>
-              {/* Payment Amount & Note */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '0.75rem' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
-                    Amount (₹)
-                  </label>
-                  <input
-                    type="number"
-                    value={upiAmount}
-                    onChange={(e) => setUpiAmount(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '0.65rem 0.85rem',
-                      borderRadius: '10px',
-                      border: '1.5px solid #CBD5E1',
-                      fontSize: '1rem',
-                      fontWeight: 700,
-                      color: '#1A2B49',
-                    }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
-                    Payment Note
-                  </label>
-                  <input
-                    type="text"
-                    value={upiNote}
-                    onChange={(e) => setUpiNote(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '0.65rem 0.85rem',
-                      borderRadius: '10px',
-                      border: '1.5px solid #CBD5E1',
-                      fontSize: '0.9rem',
-                      color: '#1A2B49',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Scannable Store Payment QR */}
-              <div
-                style={{
-                  background: '#FAFAFB',
-                  border: '1.5px solid #E2E8F0',
-                  borderRadius: '16px',
-                  padding: '1.25rem',
-                  textAlign: 'center',
-                }}
-              >
-                <div
-                  style={{
-                    background: '#FFFFFF',
-                    padding: '12px',
-                    borderRadius: '14px',
-                    display: 'inline-block',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.06)',
-                  }}
-                >
-                  <QRCodeSVG value={upiPaymentUrl} size={150} level="M" />
-                </div>
-                <div style={{ marginTop: '0.75rem' }}>
-                  <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1A2B49', display: 'block' }}>
-                    {upiSettings.upi_name || selectedBizForUpi?.name}
-                  </span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: '#64748B' }}>
-                    {upiSettings.upi_id}
-                  </span>
-                </div>
-                <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', marginTop: '4px' }}>
-                  Scan with GPay, PhonePe, Paytm, BHIM, or any UPI App
-                </span>
-              </div>
-
-              {/* Direct UPI Payment Intent Button for Mobile */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-                <a
-                  href={upiPaymentUrl}
-                  className="btn btn-primary"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.5rem',
-                    background: '#1A2B49',
-                    color: '#FFFFFF',
-                    padding: '0.85rem',
-                    borderRadius: '12px',
-                    textDecoration: 'none',
-                    fontWeight: 700,
-                  }}
-                >
-                  <Smartphone size={18} /> Pay via UPI App (₹{upiAmount || 0})
-                </a>
-                <p style={{ fontSize: '0.72rem', color: '#64748B', textAlign: 'center', margin: 0 }}>
-                  ⚠️ Status will show "Payment initiated" until verified at store counter.
-                </p>
-              </div>
-            </>
-          ) : (
-            <div style={{ padding: '2rem 1rem', textAlign: 'center', background: '#FAFAFB', borderRadius: '12px' }}>
-              <p style={{ color: '#64748B', fontSize: '0.85rem', margin: 0 }}>
-                This store has not configured a direct UPI ID yet. You can pay at the counter or via order checkout.
-              </p>
-            </div>
-          )}
-        </div>
-      </Modal>
 
       {/* =================================================================
           12. CLAIM REWARD CONFIRMATION MODAL

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
 // Providers
@@ -10,7 +10,7 @@ import { CartProvider } from './context/CartContext';
 import { AppLayout } from './components/layout/AppLayout';
 import { ProtectedRoute } from './components/layout/ProtectedRoute';
 
-// Public & Landing
+// Public & Landing (keep eager - first screen)
 import { PublicLanding } from './pages/public/PublicLanding';
 import { PublicQRMenu } from './pages/public/PublicQRMenu';
 import { PublicBusinessHub } from './pages/public/PublicBusinessHub';
@@ -18,7 +18,7 @@ import { PublicCheckout } from './pages/public/PublicCheckout';
 import { PaymentStatus, OrderSuccess } from './pages/public/PaymentStatus';
 import { DownloadPage } from './pages/public/DownloadPage';
 
-// Auth
+// Auth (keep eager - entry points)
 import { AuthHub } from './pages/auth/AuthHub';
 import { BusinessLogin } from './pages/auth/BusinessLogin';
 import { BusinessSignup } from './pages/auth/BusinessSignup';
@@ -28,45 +28,59 @@ import { StaffLogin } from './pages/auth/StaffLogin';
 import { AdminLogin } from './pages/auth/AdminLogin';
 import { ForgotPassword } from './pages/auth/ForgotPassword';
 
-// Business Modules
-import { BusinessDashboard } from './pages/business/BusinessDashboard';
-import { BusinessOnboarding } from './pages/business/BusinessOnboarding';
-import { BusinessProfile } from './pages/business/BusinessProfile';
-import { CustomerManagement } from './pages/business/CustomerManagement';
-import { StaffManagement } from './pages/business/StaffManagement';
-import { ProductsServices } from './pages/business/ProductsServices';
-import { OrdersManagement } from './pages/business/OrdersManagement';
-import { BillingManagement } from './pages/business/BillingManagement';
-import { PaymentsManagement } from './pages/business/PaymentsManagement';
-import { InventoryManagement } from './pages/business/InventoryManagement';
-import { ExpensesManagement } from './pages/business/ExpensesManagement';
-import { SuppliersManagement } from './pages/business/SuppliersManagement';
-import { TableBookingManagement } from './pages/business/TableBookingManagement';
-import { QRMenuManagement } from './pages/business/QRMenuManagement';
-import { QRScannerPage } from './pages/business/QRScannerPage';
-import { LoyaltyManagement } from './pages/business/LoyaltyManagement';
-import { OffersManagement } from './pages/business/OffersManagement';
-import { ChatManagement } from './pages/business/ChatManagement';
-import { NotificationsPage } from './pages/business/NotificationsPage';
-import { AnalyticsPage } from './pages/business/AnalyticsPage';
-import { SubscriptionPage } from './pages/business/SubscriptionPage';
-import { SettingsPage } from './pages/business/SettingsPage';
+// Business Modules - Lazy load heavy/infrequent pages
+const BusinessDashboard = lazy(() => import('./pages/business/BusinessDashboard').then(m => ({ default: m.BusinessDashboard })));
+const BusinessOnboarding = lazy(() => import('./pages/business/BusinessOnboarding').then(m => ({ default: m.BusinessOnboarding })));
+const BusinessProfile = lazy(() => import('./pages/business/BusinessProfile').then(m => ({ default: m.BusinessProfile })));
+const CustomerManagement = lazy(() => import('./pages/business/CustomerManagement').then(m => ({ default: m.CustomerManagement })));
+const StaffManagement = lazy(() => import('./pages/business/StaffManagement').then(m => ({ default: m.StaffManagement })));
+const ProductsServices = lazy(() => import('./pages/business/ProductsServices').then(m => ({ default: m.ProductsServices })));
+const OrdersManagement = lazy(() => import('./pages/business/OrdersManagement').then(m => ({ default: m.OrdersManagement })));
+const BillingManagement = lazy(() => import('./pages/business/BillingManagement').then(m => ({ default: m.BillingManagement })));
+const PaymentsTransactions = lazy(() => import('./pages/business/PaymentsTransactions').then(m => ({ default: m.PaymentsTransactions })));
+const SubscriptionManagement = lazy(() => import('./pages/business/SubscriptionManagement').then(m => ({ default: m.SubscriptionManagement })));
+const InventoryManagement = lazy(() => import('./pages/business/InventoryManagement').then(m => ({ default: m.InventoryManagement })));
+const ExpensesManagement = lazy(() => import('./pages/business/ExpensesManagement').then(m => ({ default: m.ExpensesManagement })));
+const SuppliersManagement = lazy(() => import('./pages/business/SuppliersManagement').then(m => ({ default: m.SuppliersManagement })));
+const TableBookingManagement = lazy(() => import('./pages/business/TableBookingManagement').then(m => ({ default: m.TableBookingManagement })));
+const QRMenuManagement = lazy(() => import('./pages/business/QRMenuManagement').then(m => ({ default: m.QRMenuManagement })));
+const QRScannerPage = lazy(() => import('./pages/business/QRScannerPage').then(m => ({ default: m.QRScannerPage })));
+const LoyaltyManagement = lazy(() => import('./pages/business/LoyaltyManagement').then(m => ({ default: m.LoyaltyManagement })));
+const OffersManagement = lazy(() => import('./pages/business/OffersManagement').then(m => ({ default: m.OffersManagement })));
+const ChatManagement = lazy(() => import('./pages/business/ChatManagement').then(m => ({ default: m.ChatManagement })));
+const NotificationsPage = lazy(() => import('./pages/business/NotificationsPage').then(m => ({ default: m.NotificationsPage })));
+const AnalyticsPage = lazy(() => import('./pages/business/AnalyticsPage').then(m => ({ default: m.AnalyticsPage })));
+const SettingsPage = lazy(() => import('./pages/business/SettingsPage').then(m => ({ default: m.SettingsPage })));
 
-// Customer Modules
-import { CustomerHome } from './pages/customer/CustomerHome';
-import { CustomerBusinesses } from './pages/customer/CustomerBusinesses';
-import { CustomerLoyalty } from './pages/customer/CustomerLoyalty';
-import { CustomerChat } from './pages/customer/CustomerChat';
-import { CustomerProfile } from './pages/customer/CustomerProfile';
-import { CustomerQRScanner } from './pages/customer/CustomerQRScanner';
-import { CustomerTableBooking } from './pages/customer/CustomerTableBooking';
+// Customer Modules - Lazy load heavy pages
+const CustomerHome = lazy(() => import('./pages/customer/CustomerHome').then(m => ({ default: m.CustomerHome })));
+const CustomerBusinesses = lazy(() => import('./pages/customer/CustomerBusinesses').then(m => ({ default: m.CustomerBusinesses })));
+const CustomerLoyalty = lazy(() => import('./pages/customer/CustomerLoyalty').then(m => ({ default: m.CustomerLoyalty })));
+const CustomerChat = lazy(() => import('./pages/customer/CustomerChat').then(m => ({ default: m.CustomerChat })));
+const CustomerProfile = lazy(() => import('./pages/customer/CustomerProfile').then(m => ({ default: m.CustomerProfile })));
+const CustomerQRScanner = lazy(() => import('./pages/customer/CustomerQRScanner').then(m => ({ default: m.CustomerQRScanner })));
+const CustomerTableBooking = lazy(() => import('./pages/customer/CustomerTableBooking').then(m => ({ default: m.CustomerTableBooking })));
 
 // Admin Modules
-import { AdminDashboard } from './pages/admin/AdminDashboard';
-import { AdminBusinesses } from './pages/admin/AdminBusinesses';
-import { AdminPlans } from './pages/admin/AdminPlans';
-import { AdminSettings } from './pages/admin/AdminSettings';
+const AdminDashboard = lazy(() => import('./pages/admin/AdminDashboard').then(m => ({ default: m.AdminDashboard })));
+const AdminBusinesses = lazy(() => import('./pages/admin/AdminBusinesses').then(m => ({ default: m.AdminBusinesses })));
+const AdminPlans = lazy(() => import('./pages/admin/AdminPlans').then(m => ({ default: m.AdminPlans })));
+const AdminSettings = lazy(() => import('./pages/admin/AdminSettings').then(m => ({ default: m.AdminSettings })));
+
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
+
+// Lightweight loading skeleton
+const PageSkeleton = () => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1.5rem', maxWidth: '1200px', margin: '0 auto' }}>
+    <div style={{ height: '32px', width: '300px', background: '#E2E8F0', borderRadius: '8px', animation: 'pulse 1.5s infinite' }} />
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+      {[1,2,3,4].map(i => (
+        <div key={i} style={{ height: '120px', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '12px', animation: 'pulse 1.5s infinite' }} />
+      ))}
+    </div>
+    <div style={{ height: '300px', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '12px', animation: 'pulse 1.5s infinite' }} />
+  </div>
+);
 
 export function App() {
   return (
@@ -90,8 +104,8 @@ export function App() {
               <Route path="/menu/:slug" element={<PublicQRMenu />} />
               <Route path="/store/:slug" element={<PublicQRMenu />} />
               <Route path="/checkin/:businessId" element={<CustomerQRScanner />} />
-              <Route path="/loyalty/:businessId" element={<CustomerLoyalty />} />
-              <Route path="/customer/:customerId" element={<CustomerProfile />} />
+              <Route path="/loyalty/:businessId" element={<Suspense fallback={<PageSkeleton />}> <CustomerLoyalty /> </Suspense>} />
+              <Route path="/customer/:customerId" element={<Suspense fallback={<PageSkeleton />}> <CustomerProfile /> </Suspense>} />
               <Route path="/checkout" element={<PublicCheckout />} />
               <Route path="/payment-status/:txnId" element={<PaymentStatus />} />
               <Route path="/order-success/:orderId" element={<OrderSuccess />} />
@@ -112,7 +126,9 @@ export function App() {
                 path="/business/onboarding"
                 element={
                   <ProtectedRoute allowedRoles={['business']}>
-                    <BusinessOnboarding />
+                    <Suspense fallback={<PageSkeleton />}>
+                      <BusinessOnboarding />
+                    </Suspense>
                   </ProtectedRoute>
                 }
               />
@@ -126,28 +142,28 @@ export function App() {
                   </ProtectedRoute>
                 }
               >
-                <Route index element={<BusinessDashboard />} />
-                <Route path="customers" element={<CustomerManagement />} />
-                <Route path="staff" element={<StaffManagement />} />
-                <Route path="products" element={<ProductsServices />} />
-                <Route path="orders" element={<OrdersManagement />} />
-                <Route path="billing" element={<BillingManagement />} />
-                <Route path="payments" element={<PaymentsManagement />} />
-                <Route path="table-booking" element={<TableBookingManagement />} />
-                <Route path="inventory" element={<InventoryManagement />} />
-                <Route path="expenses" element={<ExpensesManagement />} />
-                <Route path="suppliers" element={<SuppliersManagement />} />
-                <Route path="qr-menu" element={<QRMenuManagement />} />
-                <Route path="qr-scanner" element={<QRScannerPage />} />
-                <Route path="loyalty" element={<LoyaltyManagement />} />
-                <Route path="rewards" element={<LoyaltyManagement />} />
-                <Route path="offers" element={<OffersManagement />} />
-                <Route path="chat" element={<ChatManagement />} />
-                <Route path="notifications" element={<NotificationsPage />} />
-                <Route path="analytics" element={<AnalyticsPage />} />
-                <Route path="subscription" element={<SubscriptionPage />} />
-                <Route path="profile" element={<BusinessProfile />} />
-                <Route path="settings" element={<SettingsPage />} />
+                <Route index element={<Suspense fallback={<PageSkeleton />}> <BusinessDashboard /> </Suspense>} />
+                <Route path="customers" element={<Suspense fallback={<PageSkeleton />}> <CustomerManagement /> </Suspense>} />
+                <Route path="staff" element={<Suspense fallback={<PageSkeleton />}> <StaffManagement /> </Suspense>} />
+                <Route path="products" element={<Suspense fallback={<PageSkeleton />}> <ProductsServices /> </Suspense>} />
+                <Route path="orders" element={<Suspense fallback={<PageSkeleton />}> <OrdersManagement /> </Suspense>} />
+                <Route path="billing" element={<Suspense fallback={<PageSkeleton />}> <BillingManagement /> </Suspense>} />
+                <Route path="payments" element={<Suspense fallback={<PageSkeleton />}> <PaymentsTransactions /> </Suspense>} />
+                <Route path="subscription" element={<Suspense fallback={<PageSkeleton />}> <SubscriptionManagement /> </Suspense>} />
+                <Route path="table-booking" element={<Suspense fallback={<PageSkeleton />}> <TableBookingManagement /> </Suspense>} />
+                <Route path="inventory" element={<Suspense fallback={<PageSkeleton />}> <InventoryManagement /> </Suspense>} />
+                <Route path="expenses" element={<Suspense fallback={<PageSkeleton />}> <ExpensesManagement /> </Suspense>} />
+                <Route path="suppliers" element={<Suspense fallback={<PageSkeleton />}> <SuppliersManagement /> </Suspense>} />
+                <Route path="qr-menu" element={<Suspense fallback={<PageSkeleton />}> <QRMenuManagement /> </Suspense>} />
+                <Route path="qr-scanner" element={<Suspense fallback={<PageSkeleton />}> <QRScannerPage /> </Suspense>} />
+                <Route path="loyalty" element={<Suspense fallback={<PageSkeleton />}> <LoyaltyManagement /> </Suspense>} />
+                <Route path="rewards" element={<Suspense fallback={<PageSkeleton />}> <LoyaltyManagement /> </Suspense>} />
+                <Route path="offers" element={<Suspense fallback={<PageSkeleton />}> <OffersManagement /> </Suspense>} />
+                <Route path="chat" element={<Suspense fallback={<PageSkeleton />}> <ChatManagement /> </Suspense>} />
+                <Route path="notifications" element={<Suspense fallback={<PageSkeleton />}> <NotificationsPage /> </Suspense>} />
+                <Route path="analytics" element={<Suspense fallback={<PageSkeleton />}> <AnalyticsPage /> </Suspense>} />
+                <Route path="profile" element={<Suspense fallback={<PageSkeleton />}> <BusinessProfile /> </Suspense>} />
+                <Route path="settings" element={<Suspense fallback={<PageSkeleton />}> <SettingsPage /> </Suspense>} />
               </Route>
 
               {/* Staff Direct Alias */}
@@ -157,10 +173,6 @@ export function App() {
               />
 
               {/* Plural /businesses Aliases */}
-              <Route
-                path="/businesses/subscription"
-                element={<Navigate to="/business/subscription" replace />}
-              />
               <Route
                 path="/businesses/*"
                 element={<Navigate to="/business" replace />}
@@ -175,17 +187,17 @@ export function App() {
                   </ProtectedRoute>
                 }
               >
-                <Route index element={<CustomerHome />} />
-                <Route path="businesses" element={<CustomerBusinesses />} />
-                <Route path="scan-qr" element={<CustomerQRScanner />} />
-                <Route path="table-booking" element={<CustomerTableBooking />} />
-                <Route path="loyalty" element={<CustomerLoyalty />} />
-                <Route path="rewards" element={<CustomerLoyalty />} />
-                <Route path="offers" element={<CustomerLoyalty />} />
-                <Route path="activity" element={<CustomerProfile />} />
-                <Route path="chat" element={<CustomerChat />} />
-                <Route path="notifications" element={<NotificationsPage />} />
-                <Route path="profile" element={<CustomerProfile />} />
+                <Route index element={<Suspense fallback={<PageSkeleton />}> <CustomerHome /> </Suspense>} />
+                <Route path="businesses" element={<Suspense fallback={<PageSkeleton />}> <CustomerBusinesses /> </Suspense>} />
+                <Route path="scan-qr" element={<Suspense fallback={<PageSkeleton />}> <CustomerQRScanner /> </Suspense>} />
+                <Route path="table-booking" element={<Suspense fallback={<PageSkeleton />}> <CustomerTableBooking /> </Suspense>} />
+                <Route path="loyalty" element={<Suspense fallback={<PageSkeleton />}> <CustomerLoyalty /> </Suspense>} />
+                <Route path="rewards" element={<Suspense fallback={<PageSkeleton />}> <CustomerLoyalty /> </Suspense>} />
+                <Route path="offers" element={<Suspense fallback={<PageSkeleton />}> <CustomerLoyalty /> </Suspense>} />
+                <Route path="activity" element={<Suspense fallback={<PageSkeleton />}> <CustomerProfile /> </Suspense>} />
+                <Route path="chat" element={<Suspense fallback={<PageSkeleton />}> <CustomerChat /> </Suspense>} />
+                <Route path="notifications" element={<Suspense fallback={<PageSkeleton />}> <NotificationsPage /> </Suspense>} />
+                <Route path="profile" element={<Suspense fallback={<PageSkeleton />}> <CustomerProfile /> </Suspense>} />
               </Route>
 
               {/* Customer Table Booking Direct Alias */}
@@ -203,10 +215,10 @@ export function App() {
                   </ProtectedRoute>
                 }
               >
-                <Route index element={<AdminDashboard />} />
-                <Route path="businesses" element={<AdminBusinesses />} />
-                <Route path="plans" element={<AdminPlans />} />
-                <Route path="settings" element={<AdminSettings />} />
+                <Route index element={<Suspense fallback={<PageSkeleton />}> <AdminDashboard /> </Suspense>} />
+                <Route path="businesses" element={<Suspense fallback={<PageSkeleton />}> <AdminBusinesses /> </Suspense>} />
+                <Route path="plans" element={<Suspense fallback={<PageSkeleton />}> <AdminPlans /> </Suspense>} />
+                <Route path="settings" element={<Suspense fallback={<PageSkeleton />}> <AdminSettings /> </Suspense>} />
               </Route>
 
               {/* Fallback Catch-All */}

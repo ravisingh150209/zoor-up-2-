@@ -133,14 +133,20 @@ export const authService = {
         console.warn('[AUTH] Server rejected token (401). Clearing session.');
         authStorage.clearSession();
         return { user: null, error: 'Session expired. Please log in again.' };
-      } else if (isProductionEnvironment()) {
-        return { user: null, error: 'Session could not be verified. Please try again.' };
+      }
+
+      // Non-401 HTTP error (e.g., 500, 403) - in production, clear session and fail
+      if (isProductionEnvironment()) {
+        authStorage.clearSession();
+        return { user: null, error: 'Session could not be verified. Please log in again.' };
       }
     } catch (err) {
+      // Network error or backend offline
       if (isProductionEnvironment()) {
+        authStorage.clearSession();
         return { user: null, error: 'Authentication service is unavailable. Please try again.' };
       }
-      // Network error or backend offline: DO NOT LOG OUT!
+      // Network error or backend offline: DO NOT LOG OUT in development!
       console.warn('[AUTH] Session validation network issue, maintaining cached session:', err);
     }
 

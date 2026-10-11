@@ -273,11 +273,89 @@ export const businessService = {
     throw new Error('Business not found');
   },
 
+  // UPI Settings
+  getBusinessUpi: async (businessId) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/business/upi`, {
+        headers: {
+          'Accept': 'application/json',
+          ...authStorage.getAuthHeaders(),
+        },
+      });
+      if (!resp.ok) throw new Error('Failed to load UPI settings');
+      return await resp.json();
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      return { upi_id: '', upi_name: '', upi_notes: 'ZOOR UP Store Payment', upi_enabled: false };
+    }
+  },
+
+  updateBusinessUpi: async (businessId, upiData) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/business/upi`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...authStorage.getAuthHeaders(),
+        },
+        body: JSON.stringify(upiData),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to save UPI settings');
+      }
+      return await resp.json();
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      return { success: true };
+    }
+  },
+
   completeOnboarding: async (businessId) => {
     if (isProductionEnvironment()) {
       return businessService.saveOnboardingStep(businessId, 10, { onboarding_completed: true });
     }
     return businessService.updateBusiness(businessId, { onboarding_completed: true });
+  },
+
+  // Subscription Management
+  getSubscription: async (businessId) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/business/subscription`, {
+        headers: {
+          'Accept': 'application/json',
+          ...authStorage.getAuthHeaders(),
+        },
+      });
+      if (!resp.ok) throw new Error('Failed to load subscription');
+      return await resp.json();
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      return { plan: 'FREE', subscription_status: 'ACTIVE', trial_status: 'NOT_APPLICABLE' };
+    }
+  },
+
+  updateSubscriptionTrial: async (businessId, payload) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/business/subscription/trial`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...authStorage.getAuthHeaders(),
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || err.error || 'Failed to update subscription');
+      }
+      return await resp.json();
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      return { success: true };
+    }
   },
 
   getDashboardStats: async (businessId) => {
@@ -457,49 +535,5 @@ export const businessService = {
         categoryDistribution,
       }
     };
-  },
-
-  // UPI & Payments Setup
-  getUpiSettings: async (businessId) => {
-    await new Promise(r => setTimeout(r, 100));
-    const biz = await businessService.getBusiness(businessId);
-    return {
-      upi_id: biz?.upi_id || '',
-      upi_name: biz?.upi_name || biz?.name || '',
-      upi_notes: biz?.upi_notes || 'ZOOR UP Store Payment',
-      upi_enabled: Boolean(biz?.upi_id),
-    };
-  },
-
-  saveUpiSettings: async (businessId, settings) => {
-    await new Promise(r => setTimeout(r, 200));
-    const upiId = (settings.upi_id || '').trim();
-    if (upiId) {
-      // Basic format check: name@provider
-      const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-      if (!upiRegex.test(upiId)) {
-        throw new Error('Please enter a valid UPI ID (e.g. yourstore@okaxis, business@upi)');
-      }
-    }
-
-    const updates = {
-      upi_id: upiId,
-      upi_name: (settings.upi_name || '').trim(),
-      upi_notes: (settings.upi_notes || '').trim(),
-      upi_enabled: Boolean(upiId),
-      updated_at: new Date().toISOString()
-    };
-
-    await businessService.updateBusiness(businessId, updates);
-    return updates;
-  },
-
-  generateUpiPaymentUrl: ({ upi_id, upi_name, amount, note }) => {
-    if (!upi_id) return null;
-    const cleanId = upi_id.trim();
-    const cleanName = encodeURIComponent(upi_name || 'Store Payment');
-    const cleanNote = encodeURIComponent(note || 'ZOOR UP Order');
-    const amtStr = amount ? `&am=${encodeURIComponent(Number(amount).toFixed(2))}` : '';
-    return `upi://pay?pa=${cleanId}&pn=${cleanName}${amtStr}&tn=${cleanNote}&cu=INR`;
   }
 };

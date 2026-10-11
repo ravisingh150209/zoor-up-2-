@@ -250,6 +250,7 @@ class OrderCreateRequest(BaseModel):
     table_number: Optional[str] = Field(None, max_length=64)
     customer_name: Optional[str] = Field(None, max_length=120)
     customer_phone: Optional[str] = Field(None, max_length=32)
+    coupon_code: Optional[str] = Field(None, max_length=64)
     idempotency_key: str = Field(..., min_length=16, max_length=128)
 
     class Config:

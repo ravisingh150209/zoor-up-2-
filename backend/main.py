@@ -10,12 +10,11 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from backend.routes.auth_routes import router as auth_router
-from backend.routes.customer_routes import router as customer_router, get_customer_business_loyalty
+from backend.routes.customer_routes import router as customer_router, get_customer_business_loyalty, redeem_customer_voucher
 from backend.routes.business_routes import router as business_router
 from backend.routes.qr_routes import router as qr_router
 from backend.routes.upload_routes import router as upload_router
 from backend.routes.payment_routes import router as payment_router
-from backend.routes.subscription_routes import router as subscription_router, subscriptions_router
 from backend.routes.notification_routes import router as notification_router
 from backend.routes.table_routes import router as table_router, customer_table_router
 from backend.routes.order_routes import router as order_router
@@ -118,8 +117,6 @@ app.include_router(business_router)
 app.include_router(qr_router)
 app.include_router(upload_router)
 app.include_router(payment_router)
-app.include_router(subscription_router)
-app.include_router(subscriptions_router)
 app.include_router(notification_router)
 app.include_router(table_router)
 app.include_router(customer_table_router)
@@ -132,6 +129,16 @@ app.add_api_route(
     "/api/loyalty/{business_id}",
     get_customer_business_loyalty,
     methods=["GET"],
+)
+app.add_api_route(
+    "/api/vouchers/{voucher_id}/redeem",
+    redeem_customer_voucher,
+    methods=["POST"],
+)
+app.add_api_route(
+    "/api/rewards/{voucher_id}/redeem",
+    redeem_customer_voucher,
+    methods=["POST"],
 )
 
 @app.get("/")

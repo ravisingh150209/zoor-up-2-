@@ -497,6 +497,7 @@ def get_razorpay_payment_status(razorpay_order_id: str, current_user: dict = Dep
         "payment_id": payment.get("payment_id"),
         "razorpay_order_id": payment.get("razorpay_order_id"),
         "razorpay_payment_id": payment.get("razorpay_payment_id"),
+        "razorpay_key_id": payment.get("razorpay_key_id"),
         "status": payment.get("status"),
         "amount": payment.get("amount"),
         "currency": payment.get("currency"),

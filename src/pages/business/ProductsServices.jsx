@@ -24,6 +24,7 @@ import { LoadingState, EmptyState } from '../../components/ui/States';
 import { ImageUploader } from '../../components/ui/ImageUploader';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
+import { useDebounce } from '../../hooks/useDebounce';
 
 export const ProductsServices = () => {
   const { user } = useAuth();
@@ -32,6 +33,7 @@ export const ProductsServices = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('ALL');
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
 
   // Add / Edit Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -59,14 +61,14 @@ export const ProductsServices = () => {
 
   useEffect(() => {
     loadItems();
-  }, [bizId, activeTab, search]);
+  }, [bizId, activeTab, debouncedSearch]);
 
   const loadItems = async () => {
     setLoading(true);
     try {
       const data = await productService.getProducts(bizId, {
         type: activeTab,
-        search,
+        search: debouncedSearch,
       });
       setItems(data);
     } catch (e) {

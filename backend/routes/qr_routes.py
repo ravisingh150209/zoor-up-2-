@@ -146,6 +146,28 @@ def parse_qr_code(qr_data: str) -> Dict[str, Any]:
     if not clean:
         return {"valid": False, "error": "QR data is empty."}
 
+    # 0. Direct UPI payment QR: upi://pay?...
+    if clean.lower().startswith("upi://pay"):
+        try:
+            from urllib.parse import parse_qs, urlparse
+            parsed_url = urlparse(clean)
+            qs = parse_qs(parsed_url.query)
+            pa = qs.get("pa", [""])[0]
+            pn = qs.get("pn", [""])[0]
+            am_str = qs.get("am", [""])[0]
+            tr = qs.get("tr", [""])[0] or qs.get("tid", [""])[0]
+            return {
+                "valid": bool(pa),
+                "type": "upi",
+                "upi_id": pa,
+                "payee_name": pn,
+                "amount": float(am_str) if am_str else None,
+                "transaction_ref": tr,
+                "raw_upi_uri": clean
+            }
+        except Exception:
+            pass
+
     # 1. JSON payload
     if clean.startswith("{") and clean.endswith("}"):
         try:
@@ -381,6 +403,8 @@ def _normalize_qr_type_name(qr_type: Optional[str]) -> str:
         return "CUSTOMER"
     if normalized in ["table"]:
         return "TABLE"
+    if normalized in ["upi"]:
+        return "UPI"
     return "BUSINESS"
 
 
@@ -405,20 +429,22 @@ def _build_qr_destination(biz_slug: str, qr_type: str, table_id: Optional[str] =
 def _link_customer_to_business(customer_id: str, business_id: str, source: str = "qr_scan") -> tuple:
     """
     Idempotently links authenticated customer to a business.
-    Enforces unique constraint on (customer_id, business_id).
+    Allows multiple active businesses per customer:
+    - If customer has NO active association with this business, create it.
+    - If customer already has active association with SAME business, return existing (idempotent).
+    - If customer already has active association with DIFFERENT business, ALLOW new association.
     Returns (already_connected: bool, relationship_record: dict).
     """
     cb_col = get_collection("customer_businesses")
-    existing = cb_col.find_one({"customer_id": customer_id, "business_id": business_id})
-    if existing:
-        if existing.get("status") == "active":
-            return True, existing
-        cb_col.update_one(
-            {"id": existing["id"]},
-            {"$set": {"status": "active", "source": source, "updated_at": datetime.now().isoformat()}},
-        )
-        return False, cb_col.find_one({"id": existing["id"]})
 
+    # Check if customer already has an active association with THIS business
+    existing_same = cb_col.find_one({"customer_id": customer_id, "business_id": business_id, "status": "active"})
+    if existing_same:
+        # Same business - idempotent success
+        return True, existing_same
+
+    # No active association with this business - create new one
+    # (Allow multiple businesses - no restriction on different business)
     now_iso = datetime.now().isoformat()
     new_cb = {
         "id": f"cb_{uuid.uuid4().hex[:12]}",
@@ -648,18 +674,36 @@ def resolve_qr_get(
         destination = f"/customer/{cus_id}"
         cus_col = get_collection("customers")
         cus = cus_col.find_one({"customer_id": cus_id}) or cus_col.find_one({"id": cus_id})
-        return {
+        res = {
             "valid": True,
             "success": True,
             "type": "CUSTOMER",
             "customer_id": (cus and cus.get("customer_id")) or cus_id,
-            "customer_name": (cus and cus.get("name")) or "Valued Customer",
             "tier": (cus and (cus.get("membership_tier") or cus.get("rank"))) or "BASIC",
-            "points": (cus and cus.get("points")) or 0,
-            "stamps": (cus and cus.get("stamps")) or 0,
             "destination": destination,
             "target_url": destination,
             "web_url": f"https://zoor-up-9b3a3.web.app{destination}"
+        }
+        if current_user:
+            res["customer_name"] = (cus and cus.get("name")) or "Valued Customer"
+            res["points"] = (cus and cus.get("points")) or 0
+            res["stamps"] = (cus and cus.get("stamps")) or 0
+        return res
+
+    # Handle direct UPI payment QR in GET resolver
+    if parsed.get("type") == "upi":
+        return {
+            "valid": True,
+            "success": True,
+            "type": "UPI",
+            "upi_id": parsed.get("upi_id"),
+            "payee_name": parsed.get("payee_name"),
+            "amount": parsed.get("amount"),
+            "transaction_ref": parsed.get("transaction_ref"),
+            "raw_upi_uri": parsed.get("raw_upi_uri"),
+            "destination": parsed.get("raw_upi_uri"),
+            "target_url": parsed.get("raw_upi_uri"),
+            "web_url": parsed.get("raw_upi_uri")
         }
 
     if not b_id:
@@ -752,17 +796,34 @@ def resolve_qr(
         cus_id = parsed.get("customer_id")
         cus_col = get_collection("customers")
         cus = cus_col.find_one({"customer_id": cus_id}) or cus_col.find_one({"id": cus_id})
-        return {
+        res = {
             "valid": True,
             "success": True,
             "type": "CUSTOMER",
             "customer_id": (cus and cus.get("customer_id")) or cus_id,
-            "customer_name": (cus and cus.get("name")) or "Valued Customer",
             "tier": (cus and (cus.get("membership_tier") or cus.get("rank"))) or "BASIC",
-            "points": (cus and cus.get("points")) or 0,
-            "stamps": (cus and cus.get("stamps")) or 0,
             "destination": f"/customer/{cus_id}",
             "target_url": f"/customer/{cus_id}"
+        }
+        if current_user:
+            res["customer_name"] = (cus and cus.get("name")) or "Valued Customer"
+            res["points"] = (cus and cus.get("points")) or 0
+            res["stamps"] = (cus and cus.get("stamps")) or 0
+        return res
+
+    # Handle direct UPI payment QR in POST resolver
+    if parsed.get("type") == "upi":
+        return {
+            "valid": True,
+            "success": True,
+            "type": "UPI",
+            "upi_id": parsed.get("upi_id"),
+            "payee_name": parsed.get("payee_name"),
+            "amount": parsed.get("amount"),
+            "transaction_ref": parsed.get("transaction_ref"),
+            "raw_upi_uri": parsed.get("raw_upi_uri"),
+            "destination": parsed.get("raw_upi_uri"),
+            "target_url": parsed.get("raw_upi_uri")
         }
 
     invite_token = parsed.get("invite_token")
@@ -866,9 +927,67 @@ def connect_customer_qr(
     Prevents duplicates using customer_id + business_id uniqueness.
     Prevents duplicate check-in visits within 5 minutes.
     """
-    customer_id = current_user.get("customer_id") or current_user.get("id")
+    # Use the same customer identity resolution as get_customer_profile
+    customers_col = get_collection("customers")
+    cus = (
+        (customers_col.find_one({"customer_id": current_user.get("customer_id")}) if current_user.get("customer_id") else None) or
+        (customers_col.find_one({"login_email": current_user.get("email")}) if current_user.get("email") else None) or
+        (customers_col.find_one({"email": current_user.get("email")}) if current_user.get("email") else None) or
+        customers_col.find_one({"user_id": current_user["id"]}) or
+        (customers_col.find_one({"phone": current_user.get("phone")}) if current_user.get("phone") else None)
+    )
+    if not cus:
+        # Auto-create profile if missing (same as get_customer_profile)
+        user_id = current_user["id"]
+        customer_id = current_user.get("customer_id")
+        if not customer_id:
+            for _ in range(5):
+                candidate = f"ZUP-CUS-{secrets.token_hex(4).upper()}"
+                if not customers_col.find_one({"customer_id": candidate}):
+                    customer_id = candidate
+                    break
+            if not customer_id:
+                customer_id = f"ZUP-CUS-{int(time.time() * 1000) % 100000000:08d}"
+        cus = {
+            "id": f"cus_{uuid.uuid4().hex[:12]}",
+            "customer_id": customer_id,
+            "user_id": user_id,
+            "name": current_user.get("name", ""),
+            "full_name": current_user.get("name", "") or "Valued Customer",
+            "phone": current_user.get("phone", ""),
+            "email": current_user.get("email", ""),
+            "login_email": current_user.get("email", ""),
+            "points": 0,
+            "lifetime_points": 0,
+            "total_visits": 0,
+            "total_spent": 0.0,
+            "stamps": 0,
+            "segment": "NEW",
+            "membership_tier": "BASIC",
+            "level": 1,
+            "level_name": "BASIC",
+            "address": "",
+            "dob": "",
+            "gender": "",
+            "bio": "",
+            "notes": "",
+            "created_at": datetime.now().isoformat()
+        }
+        customers_col.insert_one(cus)
+    
+    # Use the canonical ZUP-CUS-... customer_id for associations
+    customer_id = cus.get("customer_id")
     if not customer_id:
-        raise HTTPException(status_code=400, detail="Customer identity could not be verified.")
+        # Legacy customer without customer_id - generate and assign one
+        for _ in range(5):
+            candidate = f"ZUP-CUS-{secrets.token_hex(4).upper()}"
+            if not customers_col.find_one({"customer_id": candidate}):
+                customer_id = candidate
+                break
+        if not customer_id:
+            customer_id = f"ZUP-CUS-{int(time.time() * 1000) % 100000000:08d}"
+        # Update the customer record with the new customer_id
+        customers_col.update_one({"id": cus["id"]}, {"$set": {"customer_id": customer_id, "updated_at": datetime.now().isoformat()}})
 
     businesses_col = get_collection("businesses")
     biz, is_active = find_business_by_identifier(req.business_id, businesses_col)

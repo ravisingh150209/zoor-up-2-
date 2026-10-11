@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from backend.database import get_collection
 from backend.auth import get_current_user
+from backend.models import ROLE_BUSINESS_OWNER, ROLE_CUSTOMER, ROLE_STAFF
 
 router = APIRouter(tags=["Finance, Billing & Suppliers"])
 
@@ -110,18 +111,27 @@ def get_invoices(
 ):
     user_role = (current_user.get("role") or "").upper()
     invoices_col = get_collection("invoices")
+    customers_col = get_collection("customers")
 
     if user_role == ROLE_CUSTOMER:
         cust_id = current_user.get("customer_id") or current_user.get("id")
         user_id = current_user.get("id")
         phone = current_user.get("phone")
 
-        customer_queries = [
-            {"customer_id": cust_id},
-            {"customer_id": user_id},
-        ]
+        customer_uuid = None
+        customer = customers_col.find_one({"customer_id": cust_id}) or customers_col.find_one({"id": user_id})
+        if customer:
+            # Use _db_uuid (actual database UUID) for querying invoices
+            customer_uuid = customer.get("_db_uuid") or customer.get("id")
+
+        customer_queries = []
+        if customer_uuid:
+            customer_queries.append({"customer_id": customer_uuid})
         if phone:
             customer_queries.append({"customer_phone": phone})
+
+        if not customer_queries:
+            customer_queries = [{"customer_id": cust_id}, {"customer_id": user_id}]
 
         query = {"$or": customer_queries}
         if invoice_id:
@@ -139,8 +149,6 @@ def get_invoices(
         elif order_id:
             filters["order_id"] = order_id
         all_invoices = invoices_col.find(filters)
-        if not all_invoices:
-            all_invoices = invoices_col.find({"store_id": biz_id})
 
     results = []
     for inv in all_invoices:
@@ -163,6 +171,7 @@ def get_invoices(
 @router.get("/api/billing/invoices/{invoice_id}")
 def get_invoice_by_id(invoice_id: str, current_user: dict = Depends(get_current_user)):
     invoices_col = get_collection("invoices")
+    customers_col = get_collection("customers")
     inv = invoices_col.find_one({"id": invoice_id}) or invoices_col.find_one({"order_id": invoice_id})
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found.")
@@ -170,7 +179,23 @@ def get_invoice_by_id(invoice_id: str, current_user: dict = Depends(get_current_
     user_role = (current_user.get("role") or "").upper()
     if user_role == ROLE_CUSTOMER:
         cust_id = current_user.get("customer_id") or current_user.get("id")
-        if inv.get("customer_id") not in [cust_id, current_user.get("id")] and inv.get("customer_phone") != current_user.get("phone"):
+        user_id = current_user.get("id")
+        phone = current_user.get("phone")
+
+        customer_uuid = None
+        customer = customers_col.find_one({"customer_id": cust_id}) or customers_col.find_one({"id": user_id})
+        if customer:
+            customer_uuid = customer.get("_db_uuid") or customer.get("id")
+
+        allowed = False
+        if customer_uuid and inv.get("customer_id") == customer_uuid:
+            allowed = True
+        if phone and inv.get("customer_phone") == phone:
+            allowed = True
+        if inv.get("customer_id") in [cust_id, user_id]:
+            allowed = True
+
+        if not allowed:
             raise HTTPException(status_code=403, detail="Access denied to this invoice.")
     elif user_role in [ROLE_BUSINESS_OWNER, ROLE_STAFF]:
         biz = _get_business_for_user(current_user)
@@ -184,6 +209,7 @@ def get_invoice_by_id(invoice_id: str, current_user: dict = Depends(get_current_
 def create_invoice(req: CreateInvoiceRequest, current_user: dict = Depends(get_current_user)):
     user_role = (current_user.get("role") or "").upper()
     businesses_col = get_collection("businesses")
+    customers_col = get_collection("customers")
 
     if user_role == ROLE_CUSTOMER:
         biz_id = req.business_id
@@ -202,6 +228,12 @@ def create_invoice(req: CreateInvoiceRequest, current_user: dict = Depends(get_c
         biz = _get_business_for_user(current_user)
         biz_id = biz["id"]
         customer_id = req.customer_id
+        # Auto-resolve customer_id from phone if not provided
+        if not customer_id and req.customer_phone:
+            customer = customers_col.find_one({"phone": req.customer_phone})
+            if customer:
+                # Use _db_uuid (actual UUID) if available, otherwise fall back to id
+                customer_id = customer.get("_db_uuid") or customer.get("id")
 
     invoices_col = get_collection("invoices")
 
@@ -262,16 +294,16 @@ def update_invoice_status(invoice_id: str, req: UpdateInvoiceStatusRequest, curr
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found.")
 
-    prev_status = (inv.get("payment_status") or inv.get("status") or "").upper()
-    new_status = req.status.upper()
-    db_status = "paid" if new_status == "PAID" else ("cancelled" if new_status == "CANCELLED" else "issued")
+    prev_status = (inv.get("payment_status") or inv.get("status") or "").lower()
+    new_status = req.status.lower()
+    db_status = "paid" if new_status == "paid" else ("cancelled" if new_status == "cancelled" else "issued")
 
     invoices_col.update_one(
         {"id": invoice_id},
         {"$set": {"payment_status": new_status, "status": db_status, "updated_at": datetime.now().isoformat()}}
     )
 
-    if new_status == "PAID" and prev_status != "PAID":
+    if new_status == "paid" and prev_status != "paid":
         try:
             _award_loyalty_for_invoice(inv, biz_id)
         except Exception:

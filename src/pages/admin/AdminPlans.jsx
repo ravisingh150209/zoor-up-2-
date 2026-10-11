@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Zap, Check, Edit2, Plus, Save, ShieldCheck, RefreshCw, CreditCard } from 'lucide-react';
+import { Zap, Check, Edit2, Plus, Save, ShieldCheck, RefreshCw } from 'lucide-react';
 import { adminService } from '../../services/adminService';
-import { subscriptionService } from '../../services/subscriptionService';
 import { Card, CardHeader } from '../../components/ui/Card';
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
@@ -13,29 +12,15 @@ export const AdminPlans = () => {
   const { addToast } = useToast();
   const [plans, setPlans] = useState([]);
   const [editingPlan, setEditingPlan] = useState(null);
-  const [subscriptions, setSubscriptions] = useState([]);
   const [loadingSubs, setLoadingSubs] = useState(false);
 
   useEffect(() => {
     loadPlans();
-    loadSubscriptions();
   }, []);
 
   const loadPlans = async () => {
     const list = await adminService.getPlans();
     setPlans(list);
-  };
-
-  const loadSubscriptions = async () => {
-    setLoadingSubs(true);
-    try {
-      const list = await subscriptionService.getAdminSubscriptions();
-      setSubscriptions(list);
-    } catch (e) {
-      console.warn('Failed to load admin subscriptions:', e);
-    } finally {
-      setLoadingSubs(false);
-    }
   };
 
   const handleSavePlan = async (e) => {
@@ -116,90 +101,6 @@ export const AdminPlans = () => {
           </Card>
         ))}
       </div>
-
-      {/* SECTION 20: PLATFORM ADMIN SUBSCRIPTIONS INSPECTION TABLE */}
-      <Card style={{ padding: '1.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-          <div>
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0 }}>Platform Subscriptions & Mandates</h3>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-              Server-authoritative subscription state across all merchant accounts ({subscriptions.length} active records)
-            </span>
-          </div>
-          <Button size="sm" variant="outline" icon={RefreshCw} onClick={loadSubscriptions} loading={loadingSubs}>
-            Refresh
-          </Button>
-        </div>
-
-        {subscriptions.length === 0 ? (
-          <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-            No business subscriptions recorded on the platform yet.
-          </div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.82rem' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Subscription ID</th>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Business</th>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Plan</th>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Amount</th>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Status</th>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Auto-renew</th>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Next Billing</th>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Payment Status</th>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Provider Ref</th>
-                  <th style={{ padding: '0.65rem 0.5rem' }}>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {subscriptions.map((s, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                    <td style={{ padding: '0.65rem 0.5rem', fontFamily: 'monospace', fontWeight: 600 }}>
-                      {s.subscription_id || '-'}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.5rem', fontWeight: 600 }}>
-                      {s.business_name || s.business_id}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.5rem', fontWeight: 700 }}>
-                      {s.plan}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.5rem' }}>
-                      ₹{s.amount}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.5rem' }}>
-                      <Badge variant={s.status === 'ACTIVE' ? 'success' : 'secondary'}>
-                        {s.status}
-                      </Badge>
-                    </td>
-                    <td style={{ padding: '0.65rem 0.5rem' }}>
-                      {s.auto_renew ? (
-                        <span style={{ color: '#10B981', fontWeight: 600 }}>ON</span>
-                      ) : (
-                        <span style={{ color: '#EF4444', fontWeight: 600 }}>OFF</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.5rem' }}>
-                      {s.next_billing_date ? new Date(s.next_billing_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.5rem' }}>
-                      <Badge variant={s.payment_status === 'PAID' ? 'success' : s.payment_status === 'FREE' ? 'secondary' : 'warning'}>
-                        {s.payment_status}
-                      </Badge>
-                    </td>
-                    <td style={{ padding: '0.65rem 0.5rem', fontFamily: 'monospace', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                      {s.provider_subscription_id || s.provider || '-'}
-                    </td>
-                    <td style={{ padding: '0.65rem 0.5rem', color: 'var(--text-secondary)' }}>
-                      {s.created_at ? new Date(s.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
 
       {/* Edit Plan Modal */}
       {editingPlan && (

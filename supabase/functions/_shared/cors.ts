@@ -1,11 +1,20 @@
 // Supabase Edge Functions Shared CORS Headers & Client Factory
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
+const PRODUCTION_FRONTEND_ORIGIN = Deno.env.get("FRONTEND_URL") ?? "https://zoor-up-9b3a3.web.app";
+
+const allowedOrigins = (Deno.env.get("CORS_ORIGINS") ?? PRODUCTION_FRONTEND_ORIGIN)
+  .split(",")
+  .map((o) => o.trim())
+  .filter((o) => o.length > 0);
+
 export const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": allowedOrigins.join(","),
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS, PUT, DELETE",
+  "Access-Control-Allow-Credentials": "true",
+  "Vary": "Origin",
 };
 
 export function handleCors(req: Request) {

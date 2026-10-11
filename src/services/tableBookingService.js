@@ -79,12 +79,9 @@ export const tableBookingService = {
   // TABLE MANAGEMENT
   // -------------------------------------------------------------
   getTables: async (businessId, activeOnly = false) => {
-    // 1. Try customer endpoint if available
+    if (!businessId) return [];
     try {
-      const url = businessId
-        ? `${API_BASE}/api/customer/tables?business_id=${encodeURIComponent(businessId)}`
-        : `${API_BASE}/api/customer/tables`;
-      const resp = await safeApiRequest(url);
+      const resp = await safeApiRequest(`${API_BASE}/api/tables?business_id=${encodeURIComponent(businessId)}&active_only=${activeOnly}`);
       if (resp.ok && Array.isArray(resp.data)) {
         return resp.data.map(t => ({
           ...t,
@@ -93,26 +90,11 @@ export const tableBookingService = {
           location: t.section || t.location || 'Main Dining',
         }));
       }
-    } catch (_) {}
-
-    // 2. Fallback to /api/tables/{businessId}
-    if (businessId) {
-      try {
-        const resp = await safeApiRequest(`${API_BASE}/api/tables/${encodeURIComponent(businessId)}?active_only=${activeOnly}`);
-        if (resp.ok && Array.isArray(resp.data)) {
-          return resp.data.map(t => ({
-            ...t,
-            table_number: t.table_number || t.name,
-            name: t.name || t.table_number,
-            location: t.section || t.location || 'Main Dining',
-          }));
-        }
-      } catch (_) {}
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      console.warn('[TABLES] API getTables failed, falling back to localDB in dev', e);
     }
 
-    if (isProductionEnvironment()) throw new Error('Tables are unavailable from the backend.');
-    // LocalDB fallback
-    if (!businessId) return [];
     return localDB.getTables().filter(t => t.business_id === businessId && (!activeOnly || t.is_active));
   },
 
@@ -157,9 +139,10 @@ export const tableBookingService = {
         body: JSON.stringify(updates)
       });
       if (resp.ok && resp.data) return resp.data;
-    } catch (_) {}
-
-    if (isProductionEnvironment()) throw new Error('Table update failed on the backend.');
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      console.warn('[TABLES] API updateTable failed, falling back in dev', e);
+    }
 
     const tables = localDB.getTables();
     const idx = tables.findIndex(t => t.id === tableId);
@@ -177,9 +160,10 @@ export const tableBookingService = {
         method: 'DELETE'
       });
       if (resp.ok) return true;
-    } catch (_) {}
-
-    if (isProductionEnvironment()) throw new Error('Table deletion failed on the backend.');
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      console.warn('[TABLES] API deleteTable failed, falling back in dev', e);
+    }
 
     let tables = localDB.getTables();
     tables = tables.filter(t => t.id !== tableId);
@@ -195,9 +179,11 @@ export const tableBookingService = {
     try {
       const resp = await safeApiRequest(`${API_BASE}/api/tables/settings?business_id=${encodeURIComponent(businessId)}`);
       if (resp.ok && resp.data) return resp.data;
-    } catch (_) {}
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      console.warn('[TABLES] API getTableSettings failed, falling back in dev', e);
+    }
 
-    if (isProductionEnvironment()) throw new Error('Table booking settings are unavailable from the backend.');
     const settings = localDB.getTableSettings(businessId);
     return settings || tableBookingService.getDefaultSettings();
   },
@@ -209,9 +195,11 @@ export const tableBookingService = {
         body: JSON.stringify(newSettings)
       });
       if (resp.ok && resp.data) return resp.data;
-    } catch (_) {}
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      console.warn('[TABLES] API updateTableSettings failed, falling back in dev', e);
+    }
 
-    if (isProductionEnvironment()) throw new Error('Table booking settings could not be saved on the backend.');
     localDB.saveTableSettings(businessId, newSettings);
     return newSettings;
   },
@@ -369,7 +357,10 @@ export const tableBookingService = {
       if (resp.ok && Array.isArray(resp.data)) {
         return resp.data;
       }
-    } catch (_) {}
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      console.warn('[TABLES] API getCustomerBookings failed, falling back in dev', e);
+    }
 
     // Fallback to legacy path
     if (customerId) {
@@ -381,7 +372,6 @@ export const tableBookingService = {
       } catch (_) {}
     }
 
-    if (isProductionEnvironment()) throw new Error('Your bookings are unavailable from the backend.');
     return localDB.getTableBookings().filter(b => b.customer_id === customerId);
   },
 
@@ -389,16 +379,16 @@ export const tableBookingService = {
   // BUSINESS BOOKINGS LIST
   // -------------------------------------------------------------
   getBusinessBookings: async (businessId, status = null) => {
+    if (!businessId) return [];
     try {
-      let url = `${API_BASE}/api/tables/reservations`;
-      if (businessId) url += `?business_id=${encodeURIComponent(businessId)}`;
+      let url = `${API_BASE}/api/tables/reservations?business_id=${encodeURIComponent(businessId)}`;
       if (status && status !== 'ALL') url += `&status=${encodeURIComponent(status)}`;
       const resp = await safeApiRequest(url);
       if (resp.ok && Array.isArray(resp.data)) return resp.data;
-    } catch (_) {}
-
-    if (isProductionEnvironment()) throw new Error('Business bookings are unavailable from the backend.');
-    if (!businessId) return [];
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      console.warn('[TABLES] API getBusinessBookings failed, falling back in dev', e);
+    }
 
     let list = localDB.getTableBookings().filter(b => b.business_id === businessId);
     if (status && status !== 'ALL') {

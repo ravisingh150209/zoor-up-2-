@@ -68,10 +68,15 @@ def run_tests():
     # Customers
     cus_a_id = f"cus_a_{uuid.uuid4().hex[:8]}"
     cus_b_id = f"cus_b_{uuid.uuid4().hex[:8]}"
-    users_col.insert_one({"id": cus_a_id, "role": "customer", "name": "Customer Alice"})
-    users_col.insert_one({"id": cus_b_id, "role": "customer", "name": "Customer Bob"})
-    token_a = create_access_token({"id": cus_a_id, "role": "customer", "customer_id": cus_a_id})
-    token_b = create_access_token({"id": cus_b_id, "role": "customer", "customer_id": cus_b_id})
+    cus_a_customer_id = f"ZUP-CUS-{uuid.uuid4().hex[:8].upper()}"
+    cus_b_customer_id = f"ZUP-CUS-{uuid.uuid4().hex[:8].upper()}"
+    users_col.insert_one({"id": cus_a_id, "role": "customer", "name": "Customer Alice", "customer_id": cus_a_customer_id})
+    users_col.insert_one({"id": cus_b_id, "role": "customer", "name": "Customer Bob", "customer_id": cus_b_customer_id})
+    customers_col = get_collection("customers")
+    customers_col.insert_one({"id": f"cusrec_{uuid.uuid4().hex[:8]}", "customer_id": cus_a_customer_id, "user_id": cus_a_id, "name": "Customer Alice", "phone": "", "email": ""})
+    customers_col.insert_one({"id": f"cusrec_{uuid.uuid4().hex[:8]}", "customer_id": cus_b_customer_id, "user_id": cus_b_id, "name": "Customer Bob", "phone": "", "email": ""})
+    token_a = create_access_token({"id": cus_a_id, "role": "customer", "customer_id": cus_a_customer_id})
+    token_b = create_access_token({"id": cus_b_id, "role": "customer", "customer_id": cus_b_customer_id})
     headers_a = {"Authorization": f"Bearer {token_a}"}
     headers_b = {"Authorization": f"Bearer {token_b}"}
 
@@ -217,11 +222,11 @@ def run_tests():
     c_data = res.json()
     assert c_data["success"] is True
     assert c_data["business_id"] == active_biz_id
-    assert c_data["customer_id"] == cus_a_id
+    assert c_data["customer_id"] == cus_a_customer_id
     print("  [PASS] Customer A successfully connected to Business A")
 
     # 5.2 Verify Customer B is NOT connected (Multi-Tenant Isolation)
-    b_conn = cb_col.find_one({"customer_id": cus_b_id, "business_id": active_biz_id})
+    b_conn = cb_col.find_one({"customer_id": cus_b_customer_id, "business_id": active_biz_id})
     assert b_conn is None, "Customer B should NOT be connected to Business A!"
     print("  [PASS] Customer B is isolated and NOT attached to Business A")
 
@@ -233,7 +238,7 @@ def run_tests():
     assert c_data2["already_connected"] is True
 
     # Count records in DB to ensure strictly 1 record exists
-    matching = cb_col.find({"customer_id": cus_a_id, "business_id": active_biz_id})
+    matching = cb_col.find({"customer_id": cus_a_customer_id, "business_id": active_biz_id})
     count = len(matching) if isinstance(matching, list) else len(list(matching))
     assert count == 1, f"Expected exactly 1 customer_business record, found {count}"
     print("  [PASS] Duplicate connection prevented: exactly 1 relationship record exists")

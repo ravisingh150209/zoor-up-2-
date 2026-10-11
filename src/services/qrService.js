@@ -109,8 +109,15 @@ export const qrService = {
         const bSlug = json.business_slug || json.slug || bizId;
         const rawType = (json.type || 'business').toLowerCase();
 
-        const businesses = await businessService.getAllBusinesses();
-        const biz = businesses.find(b => b.slug === bSlug || b.id === bSlug || b.id === bizId);
+        // Use backend resolution for business isolation - don't use getAllBusinesses()
+        // Instead, resolve the specific business from the QR payload
+        let biz = null;
+        if (bizId) {
+          biz = await businessService.getBusiness(bizId);
+        }
+        if (!biz && bSlug) {
+          biz = await businessService.getBusinessBySlug(bSlug);
+        }
         const finalSlug = biz?.slug || bSlug || bizId;
 
         return {
@@ -134,8 +141,8 @@ export const qrService = {
     if (bTableMatch) {
       const slug = bTableMatch[1];
       const tableId = bTableMatch[2];
-      const businesses = await businessService.getAllBusinesses();
-      const biz = businesses.find(b => b.slug === slug || b.id === slug);
+      let biz = await businessService.getBusinessBySlug(slug);
+      if (!biz) biz = await businessService.getBusiness(slug);
       const finalSlug = biz?.slug || slug;
       return {
         valid: true,
@@ -155,8 +162,8 @@ export const qrService = {
     if (bSubMatch) {
       const slug = bSubMatch[1];
       const subType = bSubMatch[2].toLowerCase() === 'loyalty' ? 'join' : bSubMatch[2].toLowerCase();
-      const businesses = await businessService.getAllBusinesses();
-      const biz = businesses.find(b => b.slug === slug || b.id === slug);
+      let biz = await businessService.getBusinessBySlug(slug);
+      if (!biz) biz = await businessService.getBusiness(slug);
       const finalSlug = biz?.slug || slug;
       return {
         valid: true,
@@ -174,8 +181,8 @@ export const qrService = {
     const bMatch = trimmed.match(bRegex);
     if (bMatch) {
       const slug = bMatch[1];
-      const businesses = await businessService.getAllBusinesses();
-      const biz = businesses.find(b => b.slug === slug || b.id === slug);
+      let biz = await businessService.getBusinessBySlug(slug);
+      if (!biz) biz = await businessService.getBusiness(slug);
       const finalSlug = biz?.slug || slug;
       return {
         valid: true,
@@ -194,8 +201,8 @@ export const qrService = {
     const menuMatch = trimmed.match(menuRegex);
     if (menuMatch) {
       const slug = menuMatch[1];
-      const businesses = await businessService.getAllBusinesses();
-      const biz = businesses.find(b => b.slug === slug || b.id === slug);
+      let biz = await businessService.getBusinessBySlug(slug);
+      if (!biz) biz = await businessService.getBusiness(slug);
       const finalSlug = biz?.slug || slug;
       return {
         valid: true,
@@ -214,8 +221,8 @@ export const qrService = {
     const checkinMatch = trimmed.match(checkinRegex);
     if (checkinMatch) {
       const bizId = checkinMatch[1];
-      const businesses = await businessService.getAllBusinesses();
-      const biz = businesses.find(b => b.id === bizId || b.slug === bizId);
+      let biz = await businessService.getBusiness(bizId);
+      if (!biz) biz = await businessService.getBusinessBySlug(bizId);
       const finalSlug = biz?.slug || bizId;
       return {
         valid: true,
@@ -234,8 +241,8 @@ export const qrService = {
     const loyaltyMatch = trimmed.match(loyaltyRegex);
     if (loyaltyMatch) {
       const bizId = loyaltyMatch[1];
-      const businesses = await businessService.getAllBusinesses();
-      const biz = businesses.find(b => b.id === bizId || b.slug === bizId);
+      let biz = await businessService.getBusiness(bizId);
+      if (!biz) biz = await businessService.getBusinessBySlug(bizId);
       const finalSlug = biz?.slug || bizId;
       return {
         valid: true,
@@ -264,9 +271,9 @@ export const qrService = {
       };
     }
 
-    // Check direct business slug or ID match
-    const businesses = await businessService.getAllBusinesses();
-    const matchedBiz = businesses.find(b => b.slug === trimmed || b.id === trimmed);
+    // Check direct business slug or ID match - use specific lookup instead of getAllBusinesses
+    let matchedBiz = await businessService.getBusinessBySlug(trimmed);
+    if (!matchedBiz) matchedBiz = await businessService.getBusiness(trimmed);
     if (matchedBiz) {
       const finalSlug = matchedBiz.slug || matchedBiz.id;
       return {

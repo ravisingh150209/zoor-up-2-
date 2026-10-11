@@ -17,7 +17,6 @@ import {
   UserCheck
 } from 'lucide-react';
 import { tableBookingService, BOOKING_STATUSES } from '../../services/tableBookingService';
-import { businessService } from '../../services/businessService';
 import { customerService } from '../../services/customerService';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
@@ -25,7 +24,7 @@ import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Input } from '../../components/ui/Input';
 import { Tabs } from '../../components/ui/Controls';
-import { LoadingState } from '../../components/ui/States';
+import { LoadingState, EmptyState } from '../../components/ui/States';
 
 export const CustomerTableBooking = () => {
   const { user } = useAuth();
@@ -55,7 +54,6 @@ export const CustomerTableBooking = () => {
   const [customerProfile, setCustomerProfile] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [confirmedBooking, setConfirmedBooking] = useState(null);
-  const [bookingsVersion, setBookingsVersion] = useState(0);
   const [bookingFilter, setBookingFilter] = useState('ALL'); // ALL | UPCOMING | PAST | CANCELLED
 
   useEffect(() => {
@@ -65,14 +63,15 @@ export const CustomerTableBooking = () => {
   const loadInitialData = async () => {
     setLoading(true);
     try {
-      const [allBiz, bookingsList, prof] = await Promise.all([
-        businessService.getAllBusinesses(),
-        tableBookingService.getCustomerBookings(customerId),
-        customerService.getProfile(user),
-      ]);
-      setBusinesses(allBiz);
-      if (allBiz.length > 0 && !selectedBusiness) {
-        setSelectedBusiness(allBiz[0]);
+      // Use customer home endpoint which returns only connected businesses
+      const homeData = await customerService.getCustomerHome();
+      const connectedBusinesses = (homeData?.businesses || []).filter(b => b?.id);
+      const bookingsList = await tableBookingService.getCustomerBookings(customerId);
+      const prof = await customerService.getProfile(user);
+      
+      setBusinesses(connectedBusinesses);
+      if (connectedBusinesses.length > 0 && !selectedBusiness) {
+        setSelectedBusiness(connectedBusinesses[0]);
       }
       setMyBookings(bookingsList);
       setCustomerProfile(prof);
@@ -84,7 +83,7 @@ export const CustomerTableBooking = () => {
     }
   };
 
-  // Re-fetch available tables whenever business, date, time, party size or bookingsVersion changes
+  // Re-fetch available tables whenever business, date, time, or party size changes
   useEffect(() => {
     if (selectedBusiness?.id) {
       checkTableAvailability();
@@ -93,7 +92,7 @@ export const CustomerTableBooking = () => {
       setAvailableTables([]);
       setSelectedTable(null);
     }
-  }, [selectedBusiness?.id, bookingDate, bookingTime, partySize, bookingsVersion]);
+  }, [selectedBusiness?.id, bookingDate, bookingTime, partySize]);
 
   const checkTableAvailability = async () => {
     if (!selectedBusiness?.id) return;
@@ -154,7 +153,6 @@ export const CustomerTableBooking = () => {
       });
 
       setConfirmedBooking(newBooking);
-      setBookingsVersion((v) => v + 1);
       addToast(`Table reserved successfully! Booking ID: ${newBooking.id}`, 'success');
       const updated = await tableBookingService.getCustomerBookings(customerId);
       setMyBookings(updated);
@@ -173,7 +171,6 @@ export const CustomerTableBooking = () => {
         addToast('Reservation cancelled', 'info');
         const updated = await tableBookingService.getCustomerBookings(customerId);
         setMyBookings(updated);
-        setBookingsVersion((v) => v + 1);
         checkTableAvailability();
       } catch (err) {
         addToast(err.message || 'Failed to cancel reservation', 'error');
@@ -259,7 +256,6 @@ export const CustomerTableBooking = () => {
           setActiveTab(tab);
           if (tab === 'BOOK') {
             setConfirmedBooking(null);
-            setBookingsVersion((v) => v + 1);
             checkTableAvailability();
           }
         }}
@@ -355,7 +351,6 @@ export const CustomerTableBooking = () => {
               onClick={() => {
                 setConfirmedBooking(null);
                 setSelectedTable(null);
-                setBookingsVersion((v) => v + 1);
                 checkTableAvailability();
               }}
             >
@@ -401,9 +396,21 @@ export const CustomerTableBooking = () => {
             </div>
 
             {businesses.length === 0 ? (
-              <p style={{ color: '#64748B', fontSize: '0.875rem' }}>
-                No registered dining partners available currently.
-              </p>
+              <EmptyState
+                icon={Store}
+                title="No connected businesses available for table booking."
+                description="Scan a ZOOR UP QR code at a restaurant to connect and start booking tables."
+                action={
+                  <Button
+                    variant="primary"
+                    onClick={() => navigate('/customer/scan-qr')}
+                    icon={QrCode}
+                    style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
+                  >
+                    Scan Restaurant QR to Connect
+                  </Button>
+                }
+              />
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '0.75rem' }}>
                 {businesses.map((b) => {

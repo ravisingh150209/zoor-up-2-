@@ -3,6 +3,7 @@ ZOOR UP Customer Routes
 """
 import uuid
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
@@ -136,7 +137,13 @@ def get_customer_profile(current_user: dict = Depends(require_role([ROLE_CUSTOME
     customers_col = get_collection("customers")
     
     # Identify customer strictly from authenticated JWT identity
-    cus = customers_col.find_one({"user_id": user_id}) or customers_col.find_one({"phone": current_user.get("phone")})
+    cus = (
+        (customers_col.find_one({"customer_id": current_user.get("customer_id")}) if current_user.get("customer_id") else None) or
+        (customers_col.find_one({"login_email": current_user.get("email")}) if current_user.get("email") else None) or
+        (customers_col.find_one({"email": current_user.get("email")}) if current_user.get("email") else None) or
+        customers_col.find_one({"user_id": user_id}) or
+        (customers_col.find_one({"phone": current_user.get("phone")}) if current_user.get("phone") else None)
+    )
 
     if not cus:
         customer_id = current_user.get("customer_id")
@@ -389,6 +396,7 @@ def get_customer_vouchers(current_user: dict = Depends(require_role([ROLE_CUSTOM
             "discount_value": voucher.get("discount_value", 0),
             "minimum_order_value": voucher.get("minimum_order_value", 0),
             "usage_limit": voucher.get("usage_limit", 1),
+            "code": assignment.get("code"),
             "status": assignment.get("status", "AVAILABLE"),
             "voucher_status": assignment.get("status", "AVAILABLE"),
             "expires_at": assignment.get("expires_at") or voucher.get("expires_at"),
@@ -411,6 +419,8 @@ def redeem_customer_voucher(
     customer_profile = get_customer_profile(current_user)
     customer_id = customer_profile["customer_id"]
     user_id = current_user.get("id")
+    token_cid = current_user.get("customer_id")
+    valid_cids = {cid for cid in (customer_id, user_id, token_cid) if cid}
     enforce_rate_limit("voucher-redeem-customer", customer_id, 20, 3600)
     enforce_rate_limit("voucher-redeem-ip", request.client.host if request.client else "unknown", 60, 3600)
 
@@ -420,12 +430,20 @@ def redeem_customer_voucher(
         customer_vouchers_col.find_one({"id": clean_id, "customer_id": customer_id}) or
         customer_vouchers_col.find_one({"voucher_id": clean_id, "customer_id": customer_id}) or
         customer_vouchers_col.find_one({"code": clean_id, "customer_id": customer_id}) or
+        (customer_vouchers_col.find_one({"id": clean_id, "customer_id": token_cid}) if token_cid else None) or
+        (customer_vouchers_col.find_one({"voucher_id": clean_id, "customer_id": token_cid}) if token_cid else None) or
+        (customer_vouchers_col.find_one({"code": clean_id, "customer_id": token_cid}) if token_cid else None) or
         customer_vouchers_col.find_one({"id": clean_id, "customer_id": user_id}) or
         customer_vouchers_col.find_one({"voucher_id": clean_id, "customer_id": user_id}) or
         customer_vouchers_col.find_one({"code": clean_id, "customer_id": user_id})
     )
 
     if not customer_voucher:
+        # Check if this voucher belongs to another customer — reject cross-customer redemption
+        other_customer_v = customer_vouchers_col.find_one({"id": clean_id}) or customer_vouchers_col.find_one({"code": clean_id})
+        if other_customer_v and other_customer_v.get("customer_id") not in valid_cids:
+            raise HTTPException(status_code=403, detail="This voucher belongs to another customer and cannot be redeemed.")
+
         # Fallback to general vouchers collection if not yet in customer_vouchers
         vouchers_col = get_collection("vouchers")
         gen_v = vouchers_col.find_one({"voucher_id": clean_id}) or vouchers_col.find_one({"id": clean_id})
@@ -481,8 +499,7 @@ def redeem_customer_voucher(
         {"$set": {
             "status": "REDEEMED",
             "redeemed_at": now_iso,
-            "redemption_count": redemption_count,
-            "updated_at": now_iso
+            "used_at": now_iso
         }}
     )
 
@@ -614,8 +631,15 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
     user_id = current_user["id"]
 
     cb_col = get_collection("customer_businesses")
+    customers_col = get_collection("customers")
+
+    # Use the customer_id (ZUP-CUS-XXXX) as the canonical identifier for customer_businesses lookups
+    # The customer_businesses collection stores connections using customer_id (ZUP-CUS-XXXX format)
+    # NOT the internal cus_XXXX document ID
+    query_customer_id = customer_id
 
     # Auto-link any pending invites sent to this customer's email
+    # NEW RULE: Only auto-link if customer has NO active business association
     cus_email = (current_user.get("email") or cus_profile.get("email") or "").strip().lower()
     if cus_email:
         invites_col = get_collection("business_invites")
@@ -623,32 +647,29 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
         for inv in pending_invites:
             b_id = inv.get("business_id")
             if b_id:
-                if not cb_col.find_one({"customer_id": customer_id, "business_id": b_id}):
-                    cb_col.insert_one({
-                        "id": f"cb_{uuid.uuid4().hex[:12]}",
-                        "customer_id": customer_id,
-                        "business_id": b_id,
-                        "source": "invite",
-                        "status": "active",
-                        "created_at": datetime.now().isoformat(),
-                        "updated_at": datetime.now().isoformat(),
-                    })
+                # Check if customer already has an active business association
+                existing_active = cb_col.find_one({"customer_id": query_customer_id, "status": "active"})
+                if not existing_active:
+                    # Customer has no active association - auto-link to invited business
+                    if not cb_col.find_one({"customer_id": query_customer_id, "business_id": b_id}):
+                        cb_col.insert_one({
+                            "id": f"cb_{uuid.uuid4().hex[:12]}",
+                            "customer_id": query_customer_id,
+                            "business_id": b_id,
+                            "source": "invite",
+                            "status": "active",
+                            "created_at": datetime.now().isoformat(),
+                            "updated_at": datetime.now().isoformat(),
+                        })
+                # Mark invite as accepted regardless (don't leave pending if already associated elsewhere)
                 invites_col.update_one({"id": inv["id"]}, {"$set": {"status": "accepted", "updated_at": datetime.now().isoformat()}})
 
-    all_customer_ids = {customer_id, user_id}
-    if cus_profile.get("id"):
-        all_customer_ids.add(cus_profile["id"])
-    customers_col = get_collection("customers")
-    for c_rec in customers_col.find({"$or": [{"user_id": user_id}, {"email": cus_email}, {"phone": cus_profile.get("phone")}]}):
-        if c_rec.get("customer_id"):
-            all_customer_ids.add(c_rec["customer_id"])
-        if c_rec.get("id"):
-            all_customer_ids.add(c_rec["id"])
+    # Query customer_businesses using ONLY the canonical customer UUID
+    # This prevents duplicate business connections from mixed customer_id formats
+    connections = list(cb_col.find({"customer_id": query_customer_id, "status": "active"}))
+    connected_biz_ids = list({str(c["business_id"]) for c in connections if c.get("business_id")})
 
-    connections = list(cb_col.find({"customer_id": {"$in": list(all_customer_ids)}, "status": "active"}))
-    connected_biz_ids = list({c["business_id"] for c in connections if c.get("business_id")})
-
-    # New customer with no businesses connected
+    # Customer with no businesses connected
     if not connected_biz_ids:
         tier_info = calculate_customer_tier(0)
         return {
@@ -678,20 +699,30 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
 
     # Customer has connected businesses - STRICT ISOLATION: ONLY connected businesses
     businesses_col = get_collection("businesses")
-    all_biz = [b for b in businesses_col.find({"status": "ACTIVE"}) if b["id"] in connected_biz_ids]
-    if not all_biz:
-        all_biz = [b for b in businesses_col.find() if b["id"] in connected_biz_ids]
+    all_raw_biz = [b for b in businesses_col.find({"status": "ACTIVE"}) if b["id"] in connected_biz_ids]
+    if not all_raw_biz:
+        all_raw_biz = [b for b in businesses_col.find() if b["id"] in connected_biz_ids]
+
+    seen_biz = set()
+    all_biz = []
+    for b in all_raw_biz:
+        b_id = b.get("id")
+        if b_id and b_id not in seen_biz:
+            seen_biz.add(b_id)
+            all_biz.append(b)
 
     visits_col = get_collection("visits")
     orders_col = get_collection("orders")
     reservations_col = get_collection("table_reservations")
 
-    cus_visits = [v for v in visits_col.find({"customer_id": customer_id}) if v.get("business_id") in connected_biz_ids]
-    cus_orders = [o for o in orders_col.find({"customer_id": customer_id}) if o.get("business_id") in connected_biz_ids]
-    cus_reservations = reservations_col.find({"customer_id": customer_id})
+    # Use customer_id (ZUP-CUS-XXXX) for consistent lookups across visits, orders, reservations
+    # The customer_businesses collection and visits/orders/reservations all use customer_id format
+    cus_visits = [v for v in visits_col.find({"customer_id": query_customer_id}) if v.get("business_id") in connected_biz_ids]
+    cus_orders = [o for o in orders_col.find({"customer_id": query_customer_id}) if o.get("business_id") in connected_biz_ids]
+    cus_reservations = reservations_col.find({"customer_id": query_customer_id})
     if not cus_reservations:
         bookings_col = get_collection("table_bookings")
-        cus_reservations = bookings_col.find({"customer_id": customer_id})
+        cus_reservations = bookings_col.find({"customer_id": query_customer_id})
 
     return {
         "success": True,
@@ -707,6 +738,11 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
         "offers": []
     }
 
+@router.get("/customer/businesses")
+def get_customer_connected_businesses(current_user: dict = Depends(require_role([ROLE_CUSTOMER]))):
+    home_data = get_customer_home(current_user)
+    return {"success": True, "businesses": home_data.get("businesses", [])}
+
 class ConnectBusinessPayload(BaseModel):
     business_id: str
     source: Optional[str] = "qr_scan"
@@ -719,7 +755,10 @@ def connect_customer_business(
 ):
     """
     Associates customer with a business via QR scan or verified action.
-    Idempotent: scanning multiple times does not create duplicates.
+    Allows multiple active businesses per customer:
+    - If customer has NO active association with this business, create it.
+    - If customer already has active association with SAME business, return existing (idempotent).
+    - If customer already has active association with DIFFERENT business, ALLOW new association.
     """
     raw_biz_id = req.business_id.strip()
     businesses_col = get_collection("businesses")
@@ -733,31 +772,45 @@ def connect_customer_business(
     customer_id = profile["customer_id"]
 
     cb_col = get_collection("customer_businesses")
-    existing = cb_col.find_one({"customer_id": customer_id, "business_id": actual_biz_id})
-    now_iso = datetime.now().isoformat()
-    already_connected = bool(existing and existing.get("status") == "active")
 
-    if not existing:
-        new_cb = {
-            "id": f"cb_{uuid.uuid4().hex[:12]}",
-            "customer_id": customer_id,
-            "business_id": actual_biz_id,
-            "source": req.source or "qr_scan",
-            "status": "active",
-            "created_at": now_iso,
-            "updated_at": now_iso
+    # Check if customer already has an active association with THIS business
+    existing_same = cb_col.find_one({"customer_id": customer_id, "business_id": actual_biz_id, "status": "active"})
+    if existing_same:
+        # Same business - idempotent success
+        already_connected = True
+        return {
+            "success": True,
+            "connected": True,
+            "already_connected": True,
+            "business": {
+                "id": biz["id"],
+                "name": biz.get("name", "Store"),
+                "slug": biz.get("slug", biz["id"]),
+                "category": biz.get("category", "General"),
+                "logo": biz.get("logo") or biz.get("logo_url")
+            }
         }
-        try:
-            cb_col.insert_one(new_cb)
-        except Exception:
-            existing = cb_col.find_one({"customer_id": customer_id, "business_id": actual_biz_id})
-            if not existing:
-                raise
-    elif existing.get("status") != "active":
-        cb_col.update_one(
-            {"id": existing["id"]},
-            {"$set": {"status": "active", "source": req.source or "qr_scan", "updated_at": now_iso}},
-        )
+
+    # No active association with this business - create new one
+    # (Allow multiple businesses - no restriction on different business)
+    now_iso = datetime.now().isoformat()
+    new_cb = {
+        "id": f"cb_{uuid.uuid4().hex[:12]}",
+        "customer_id": customer_id,
+        "business_id": actual_biz_id,
+        "source": req.source or "qr_scan",
+        "status": "active",
+        "created_at": now_iso,
+        "updated_at": now_iso
+    }
+    try:
+        cb_col.insert_one(new_cb)
+        already_connected = False
+    except Exception:
+        existing = cb_col.find_one({"customer_id": customer_id, "business_id": actual_biz_id})
+        if not existing:
+            raise
+        already_connected = True
 
     return {
         "success": True,

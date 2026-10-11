@@ -20,7 +20,15 @@ from backend.models import (
 )
 from backend.rate_limit import enforce_rate_limit
 
+from pydantic import BaseModel, Field
+
 router = APIRouter(prefix="/api", tags=["Orders"])
+
+class CouponValidateRequest(BaseModel):
+    business_id: str = Field(..., min_length=1)
+    code: str = Field(..., min_length=1)
+    subtotal: float = Field(..., ge=0)
+    customer_id: Optional[str] = None
 
 ORDER_STATUSES = {"NEW", "CONFIRMED", "PREPARING", "READY", "COMPLETED", "CANCELLED"}
 STATUS_TRANSITIONS = {
@@ -39,6 +47,102 @@ def _now_iso() -> str:
 
 def _money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _validate_coupon_logic(business_id: str, code: str, subtotal_amount: Decimal, customer_id: str = "") -> tuple[dict, Decimal, str, str]:
+    """
+    Validates coupon or voucher against Supabase.
+    Returns (record, discount_amount, clean_code, collection_name).
+    Raises HTTPException on invalid, expired, or non-matching coupon.
+    """
+    clean_code = (code or "").strip().upper()
+    if not clean_code:
+        raise HTTPException(status_code=400, detail="Coupon code is required.")
+
+    # 1. Search in vouchers collection
+    vouchers_col = get_collection("vouchers")
+    v = vouchers_col.find_one({"business_id": business_id, "code": clean_code})
+    coll_name = "vouchers"
+
+    # 2. Search in coupons collection (by business_id - canonical store identity)
+    if not v:
+        coupons_col = get_collection("coupons")
+        # Primary: search by business_id (after migration adds this column)
+        v = coupons_col.find_one({"business_id": business_id, "code": clean_code})
+        coll_name = "coupons"
+        if not v:
+            # Backward compatibility: search by store_id (legacy coupons)
+            v = coupons_col.find_one({"store_id": business_id, "code": clean_code})
+            coll_name = "coupons"
+
+    # 3. Check customer_vouchers if personalized
+    if not v and customer_id:
+        cv_col = get_collection("customer_vouchers")
+        v = cv_col.find_one({"business_id": business_id, "customer_id": customer_id, "code": clean_code})
+        coll_name = "customer_vouchers"
+
+    if not v:
+        raise HTTPException(status_code=400, detail="Invalid coupon code or not applicable to this store.")
+
+    # Check active status
+    is_active = v.get("is_active", True) if coll_name == "coupons" else (str(v.get("status", "ACTIVE")).upper() in ("ACTIVE", "AVAILABLE"))
+    if not is_active:
+        raise HTTPException(status_code=400, detail="This coupon is currently inactive.")
+
+    # Check expiry
+    expires_at = v.get("expires_at")
+    if expires_at:
+        try:
+            exp_str = str(expires_at).replace("Z", "+00:00")
+            exp_dt = datetime.fromisoformat(exp_str)
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            if exp_dt < datetime.now(timezone.utc):
+                raise HTTPException(status_code=400, detail="This coupon has expired.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+    # Check start time
+    start_at = v.get("start_at")
+    if start_at:
+        try:
+            st_str = str(start_at).replace("Z", "+00:00")
+            st_dt = datetime.fromisoformat(st_str)
+            if st_dt.tzinfo is None:
+                st_dt = st_dt.replace(tzinfo=timezone.utc)
+            if st_dt > datetime.now(timezone.utc):
+                raise HTTPException(status_code=400, detail="This coupon is not active yet.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+    # Check minimum order value
+    min_order = Decimal(str(v.get("minimum_order") or v.get("min_spend") or v.get("minimum_order_value") or 0))
+    if subtotal_amount < min_order:
+        raise HTTPException(status_code=400, detail=f"Minimum order of ₹{min_order:.2f} is required for this coupon.")
+
+    # Check usage limit
+    usage_limit = v.get("usage_limit") or v.get("total_usage_limit")
+    used_count = v.get("used_count") or v.get("total_claimed") or 0
+    if usage_limit is not None and int(used_count) >= int(usage_limit):
+        raise HTTPException(status_code=400, detail="This coupon has reached its maximum usage limit.")
+
+    # Calculate discount
+    discount_type = str(v.get("discount_type", "PERCENTAGE")).upper()
+    discount_value = Decimal(str(v.get("discount_value", 0)))
+    if discount_type in ("PERCENTAGE", "PERCENT"):
+        discount_amount = (subtotal_amount * discount_value) / Decimal("100")
+        max_discount = Decimal(str(v.get("max_discount") or v.get("maximum_discount") or 0))
+        if max_discount > 0 and discount_amount > max_discount:
+            discount_amount = max_discount
+    else:
+        discount_amount = min(subtotal_amount, discount_value)
+
+    discount_amount = _money(max(Decimal("0.00"), discount_amount))
+    return v, discount_amount, clean_code, coll_name
 
 
 def _customer_identity(current_user: dict) -> tuple[str, dict]:
@@ -197,8 +301,19 @@ def create_order(
         })
 
     subtotal = _money(subtotal)
-    tax = _money(subtotal * Decimal("0.05"))
-    total = _money(subtotal + tax)
+    applied_discount = Decimal("0.00")
+    applied_coupon_code = None
+    coupon_rec = None
+    coupon_col_name = None
+
+    if request.coupon_code and request.coupon_code.strip():
+        coupon_rec, applied_discount, applied_coupon_code, coupon_col_name = _validate_coupon_logic(
+            business_id, request.coupon_code, subtotal, customer_id
+        )
+
+    discounted_subtotal = max(Decimal("0.00"), subtotal - applied_discount)
+    tax = _money(discounted_subtotal * Decimal("0.05"))
+    total = _money(discounted_subtotal + tax)
 
     table_name = request.table_number.strip() if request.table_number else None
     if request.table_id:
@@ -218,6 +333,7 @@ def create_order(
         "table_id": request.table_id,
         "table_number": table_name,
         "payment_method": request.payment_method,
+        "coupon_code": applied_coupon_code,
     }
     fingerprint = hashlib.sha256(json.dumps(fingerprint_data, sort_keys=True).encode("utf-8")).hexdigest()
     orders = get_collection("orders")
@@ -242,7 +358,8 @@ def create_order(
         "customer_email": customer.get("email") or current_user.get("email") or "",
         "items": normalized_lines,
         "subtotal": float(subtotal),
-        "discount": 0.0,
+        "discount": float(applied_discount),
+        "coupon_code": applied_coupon_code,
         "tax": float(tax),
         "total": float(total),
         "total_amount": float(total),
@@ -269,6 +386,25 @@ def create_order(
             return duplicate
         raise
 
+    if coupon_rec and coupon_col_name:
+        try:
+            col = get_collection(coupon_col_name)
+            rec_id = coupon_rec.get("id") or coupon_rec.get("_id")
+            inc_field = "used_count" if coupon_col_name in ("coupons", "customer_vouchers") else "total_claimed"
+            col.update_one({"id": rec_id}, {"$inc": {inc_field: 1}})
+            usage_col = get_collection("coupon_usage")
+            usage_col.insert_one({
+                "id": f"cu_{uuid.uuid4().hex[:12]}",
+                "coupon_code": applied_coupon_code,
+                "business_id": business_id,
+                "customer_id": customer_id,
+                "order_id": order_id,
+                "discount_amount": float(applied_discount),
+                "created_at": now,
+            })
+        except Exception:
+            pass
+
     # Also persist corresponding invoice in invoices collection for unified billing / payment status
     invoices = get_collection("invoices")
     invoice_doc = {
@@ -283,8 +419,8 @@ def create_order(
         "subtotal": float(subtotal),
         "tax_amount": float(tax),
         "tax": float(tax),
-        "discount_amount": 0.0,
-        "discount": 0.0,
+        "discount_amount": float(applied_discount),
+        "discount": float(applied_discount),
         "total_amount": float(total),
         "total": float(total),
         "payment_status": "PENDING",
@@ -305,30 +441,71 @@ def create_order(
     return order
 
 
+@router.post("/coupons/validate")
+@router.post("/orders/validate-coupon")
+def validate_coupon_endpoint(req: CouponValidateRequest):
+    enforce_rate_limit("coupon-validate", req.business_id + ":" + req.code, 60, 3600)
+    subtotal_dec = Decimal(str(req.subtotal or 0))
+    try:
+        v, discount, code, _ = _validate_coupon_logic(req.business_id, req.code, subtotal_dec, req.customer_id or "")
+        disc_subtotal = max(Decimal("0.00"), subtotal_dec - discount)
+        tax = _money(disc_subtotal * Decimal("0.05"))
+        new_total = _money(disc_subtotal + tax)
+        return {
+            "valid": True,
+            "success": True,
+            "code": code,
+            "discount_type": v.get("discount_type", "PERCENTAGE"),
+            "discount_value": float(v.get("discount_value", 0)),
+            "discount_amount": float(discount),
+            "new_subtotal": float(disc_subtotal),
+            "tax": float(tax),
+            "new_total": float(new_total),
+            "offer": {
+                "code": code,
+                "title": v.get("title") or f"{code} Offer",
+                "discount_type": v.get("discount_type", "PERCENTAGE"),
+                "discount_value": float(v.get("discount_value", 0)),
+                "discount_val": float(v.get("discount_value", 0)),
+                "min_order": float(v.get("minimum_order") or v.get("min_spend") or v.get("minimum_order_value") or 0),
+                "active": True
+            }
+        }
+    except HTTPException as e:
+        return {"valid": False, "success": False, "message": e.detail}
+
+
 @router.get("/orders/my")
 def get_my_orders(
     business_id: Optional[str] = Query(None),
     current_user: dict = Depends(require_role([ROLE_CUSTOMER]))
 ):
-    customer_id, _ = _customer_identity(current_user)
+    customer_id, customer = _customer_identity(current_user)
     user_id = current_user.get("id")
+
+    # Use the canonical customer UUID (customers.id) for consistent order lookups
+    # Orders store customer_id as UUID (customers.id), not ZUP-CUS-... string
+    canonical_customer_uuid = customer.get("id") if customer else None
+    if not canonical_customer_uuid:
+        # Fallback: look up by customer_id (ZUP-CUS-...)
+        customers_col = get_collection("customers")
+        cus_rec = customers_col.find_one({"customer_id": customer_id})
+        if cus_rec:
+            canonical_customer_uuid = cus_rec.get("id")
+
+    query_customer_id = canonical_customer_uuid or customer_id
 
     cb_col = get_collection("customer_businesses")
     all_conn = cb_col.find({"status": "active"}) or []
+    # Match customer_businesses using the same canonical identifier used for orders
     allowed_biz_ids = {
         c.get("business_id") for c in all_conn
-        if c.get("customer_id") in (customer_id, user_id)
+        if c.get("customer_id") == query_customer_id
     }
 
     orders_col = get_collection("orders")
-    records = orders_col.find({"customer_id": customer_id}) or []
+    records = orders_col.find({"customer_id": query_customer_id}) or []
     seen_ids = {r.get("id") for r in records}
-    if user_id and user_id != customer_id:
-        extra_records = orders_col.find({"customer_id": user_id}) or []
-        for r in extra_records:
-            if r.get("id") not in seen_ids:
-                records.append(r)
-                seen_ids.add(r.get("id"))
 
     if business_id:
         clean_biz = business_id.strip()

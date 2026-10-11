@@ -198,7 +198,7 @@ def create_razorpay_order_for_payment(
             "success": True,
             "payment_id": existing_created.get("payment_id"),
             "razorpay_order_id": existing_created.get("razorpay_order_id"),
-            "razorpay_key_id": RAZORPAY_KEY_ID,
+            "razorpay_key_id": existing_created.get("razorpay_key_id") or RAZORPAY_KEY_ID,
             "amount": existing_created.get("amount"),
             "currency": "INR",
             "amount_paise": int(round(existing_created.get("amount", 0) * 100)),
@@ -221,6 +221,7 @@ def create_razorpay_order_for_payment(
         "currency": "INR",
         "payment_method": "RAZORPAY",
         "razorpay_order_id": razorpay_order["id"],
+        "razorpay_key_id": RAZORPAY_KEY_ID,
         "status": "created",
         "mode": RAZORPAY_MODE,
         "created_at": now_iso,
@@ -308,6 +309,8 @@ def verify_razorpay_payment(
             {"$set": {"payment_status": "paid", "paid_amount": payment.get("amount"), "balance": 0, "status": "paid", "updated_at": now_iso}}
         )
     
+    # Get the updated payment record to include razorpay_key_id
+    updated_payment = payments_col.find_one({"razorpay_order_id": razorpay_order_id})
     return {
         "success": True,
         "message": "Payment verified successfully",
@@ -315,6 +318,7 @@ def verify_razorpay_payment(
         "order_id": payment.get("order_id"),
         "amount": payment.get("amount"),
         "status": "paid",
+        "razorpay_key_id": updated_payment.get("razorpay_key_id") if updated_payment else None,
     }
 
 

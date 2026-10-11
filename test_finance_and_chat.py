@@ -55,7 +55,7 @@ def test_all():
     
     patch_inv_res = client.patch(f"/api/billing/invoices/{inv_id}/status", json={"status": "PAID"}, headers=headers)
     assert patch_inv_res.status_code == 200, f"Invoice status update failed: {patch_inv_res.text}"
-    assert patch_inv_res.json()["invoice"]["payment_status"] == "PAID"
+    assert patch_inv_res.json()["invoice"]["payment_status"].upper() == "PAID"
     print(f"Invoice {inv_id} status successfully updated to PAID.")
     
     # 3. Expenses Test

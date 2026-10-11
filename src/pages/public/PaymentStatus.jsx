@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { getErrorMessage } from '../../utils/errorUtils';
 import {
   CheckCircle2,
   Clock,
@@ -10,21 +11,41 @@ import {
   CreditCard,
   AlertCircle,
   Copy,
-  Receipt
+  Receipt,
+  Smartphone,
+  Lock,
+  RefreshCw
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import confetti from 'canvas-confetti';
 import { billingService } from '../../services/billingService';
 import { businessService } from '../../services/businessService';
+import { orderService } from '../../services/orderService';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { useToast } from '../../context/ToastContext';
 import { isProductionEnvironment } from '../../services/storageSeed.js';
 
+// Load Razorpay script dynamically
+const loadRazorpayScript = () => {
+  return new Promise((resolve, reject) => {
+    if (window.Razorpay) {
+      resolve(true);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve(true);
+    script.onerror = () => reject(new Error('Failed to load Razorpay script'));
+    document.body.appendChild(script);
+  });
+};
+
 export const PaymentStatus = () => {
   const { orderId, txnId } = useParams();
   const idToLoad = txnId || orderId;
   const { addToast } = useToast();
+  const navigate = useNavigate();
 
   const [invoice, setInvoice] = useState(null);
   const [business, setBusiness] = useState(null);
@@ -46,29 +67,94 @@ export const PaymentStatus = () => {
 
       let inv = null;
       let bizId = null;
+      const isPaymentId = idToLoad.startsWith('pay_');
 
-      // 1. Try authoritative Order API first
-      try {
-        const ord = await orderService.getOrderById(idToLoad);
-        if (ord && (ord.id || ord.order_id)) {
-          inv = {
-            id: ord.invoice_id || ord.id || ord.order_id,
-            order_id: ord.id || ord.order_id,
-            business_id: ord.business_id,
-            customer_name: ord.customer_name,
-            customer_phone: ord.customer_phone,
-            items: ord.items || [],
-            total_amount: ord.total || ord.total_amount || ord.subtotal || 0,
-            payment_mode: ord.payment_method || 'UPI',
-            payment_status: ord.payment_status || 'PENDING',
-            order_type: ord.order_type || 'DINE_IN',
-            table_number: ord.table_number || null,
-          };
-          bizId = ord.business_id;
-        }
-      } catch (_) {}
+      // 1. If payment_id, try payment status API first (includes Razorpay payments)
+      if (isPaymentId) {
+        try {
+          const payment = await orderService.getPaymentById(idToLoad);
+          if (payment && (payment.payment_id || payment.id)) {
+            // Fetch order details using order_id from payment
+            const orderId = payment.order_id;
+            try {
+              const ord = await orderService.getOrderById(orderId);
+              if (ord && (ord.id || ord.order_id)) {
+                inv = {
+                  id: ord.invoice_id || ord.id || ord.order_id,
+                  order_id: ord.id || ord.order_id,
+                  business_id: ord.business_id,
+                  customer_name: ord.customer_name,
+                  customer_phone: ord.customer_phone,
+                  items: ord.items || [],
+                  total_amount: payment.amount || ord.total || ord.total_amount || ord.subtotal || 0,
+                  payment_mode: ord.payment_method || (payment.payment_method || 'UPI'),
+                  payment_status: payment.status === 'pending' ? 'PENDING' : payment.status === 'paid' ? 'PAID' : payment.status.toUpperCase(),
+                  order_type: ord.order_type || 'DINE_IN',
+                  table_number: ord.table_number || null,
+                  razorpay_order_id: payment.razorpay_order_id,
+                  razorpay_payment_id: payment.razorpay_payment_id,
+                  verified: payment.verified,
+                };
+                bizId = ord.business_id;
+              }
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
 
-      // 2. Fallback to Billing Invoices API
+      // 1b. Try Razorpay-specific payment status if we have a Razorpay order ID
+      if (!inv && idToLoad.startsWith('order_')) {
+        try {
+          const payment = await orderService.getRazorpayPaymentStatus(idToLoad);
+          if (payment) {
+            const ord = await orderService.getOrderById(payment.order_id);
+            if (ord) {
+              inv = {
+                id: ord.invoice_id || ord.id || ord.order_id,
+                order_id: ord.id || ord.order_id,
+                business_id: ord.business_id,
+                customer_name: ord.customer_name,
+                customer_phone: ord.customer_phone,
+                items: ord.items || [],
+                total_amount: payment.amount || ord.total || ord.total_amount || ord.subtotal || 0,
+                payment_mode: 'RAZORPAY',
+                payment_status: payment.status === 'paid' ? 'PAID' : payment.status.toUpperCase(),
+                order_type: ord.order_type || 'DINE_IN',
+                table_number: ord.table_number || null,
+                razorpay_order_id: payment.razorpay_order_id,
+                razorpay_payment_id: payment.razorpay_payment_id,
+                verified: payment.verified,
+              };
+              bizId = ord.business_id;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // 2. Try authoritative Order API first (for order_id references)
+      if (!inv) {
+        try {
+          const ord = await orderService.getOrderById(idToLoad);
+          if (ord && (ord.id || ord.order_id)) {
+            inv = {
+              id: ord.invoice_id || ord.id || ord.order_id,
+              order_id: ord.id || ord.order_id,
+              business_id: ord.business_id,
+              customer_name: ord.customer_name,
+              customer_phone: ord.customer_phone,
+              items: ord.items || [],
+              total_amount: ord.total || ord.total_amount || ord.subtotal || 0,
+              payment_mode: ord.payment_method || 'UPI',
+              payment_status: ord.payment_status || 'PENDING',
+              order_type: ord.order_type || 'DINE_IN',
+              table_number: ord.table_number || null,
+            };
+            bizId = ord.business_id;
+          }
+        } catch (_) {}
+      }
+
+      // 3. Fallback to Billing Invoices API
       if (!inv) {
         try {
           const allInvoices = await billingService.getInvoices();
@@ -109,13 +195,86 @@ export const PaymentStatus = () => {
     }
   };
 
-  // UPI Payment Link
-  const upiId = business?.upi_id || 'store@upi';
-  const upiName = business?.name || 'Local Store';
-  const amount = invoice?.total_amount || 0;
-  const txnRef = invoice?.id || 'TXN-101';
+  const [razorpayRetryLoading, setRazorpayRetryLoading] = useState(false);
 
-  const upiIntentUri = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(upiName)}&am=${encodeURIComponent(amount)}&cu=INR&tn=${encodeURIComponent(txnRef)}`;
+  const handleRazorpayRetry = async () => {
+    if (!invoice?.razorpay_order_id) return;
+    setRazorpayRetryLoading(true);
+    try {
+      // Try to get updated payment status from backend
+      const payment = await orderService.getRazorpayPaymentStatus(invoice.razorpay_order_id);
+      if (payment && payment.status === 'paid') {
+        addToast('Payment verified successfully!', 'success');
+        // Reload the page to show updated status
+        window.location.reload();
+      } else if (payment && payment.status === 'created') {
+        // Payment not yet completed, offer to retry checkout
+        addToast('Payment not yet completed. Opening Razorpay checkout...', 'info');
+        // Reload Razorpay checkout
+        await loadRazorpayScript();
+        const options = {
+          key: payment.razorpay_key_id || (await orderService.createRazorpayOrder(invoice.order_id, invoice.business_id))?.razorpay_key_id,
+          amount: payment.amount_paise || Math.round(invoice.total_amount * 100),
+          currency: 'INR',
+          name: business?.name || 'ZOOR UP Store',
+          description: `Order ${invoice.order_id}`,
+          order_id: invoice.razorpay_order_id,
+          handler: async (response) => {
+            try {
+              const verifyResult = await orderService.verifyRazorpayPayment({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                order_id: invoice.order_id,
+              });
+              addToast('Payment verified successfully!', 'success');
+              navigate(`/order-success/${invoice.order_id}`);
+            } catch (verifyErr) {
+              console.error('Razorpay verification failed:', verifyErr);
+              addToast(getErrorMessage(verifyErr) || 'Payment verification failed', 'error');
+            }
+          },
+          prefill: {
+            name: invoice.customer_name || '',
+            contact: invoice.customer_phone || '',
+          },
+          theme: { color: '#00B89C' },
+          modal: {
+            ondismiss: () => {
+              addToast('Payment cancelled.', 'warning');
+            },
+          },
+        };
+        const rzp = new window.Razorpay(options);
+        rzp.on('payment.failed', (response) => {
+          console.error('Razorpay payment failed:', response.error);
+          const message = getErrorMessage(response?.error || response, 'Payment failed. Please try again.');
+          addToast(message, 'error');
+        });
+        rzp.open();
+      } else {
+        addToast(`Payment status: ${payment?.status || 'unknown'}`, 'info');
+      }
+    } catch (e) {
+      console.error('Razorpay retry failed:', e);
+      addToast(getErrorMessage(e) || 'Failed to check payment status', 'error');
+    } finally {
+      setRazorpayRetryLoading(false);
+    }
+  };
+
+  // UPI Payment Link from verified business record
+  // Prefer backend-generated UPI URI from payment record if available
+  const upiId = (business?.upi_id || '').trim();
+  const upiName = (business?.upi_name || business?.name || 'Local Store').trim();
+  const amount = Number(invoice?.total_amount || invoice?.total || 0).toFixed(2);
+  const txnRef = invoice?.order_id || invoice?.id || 'TXN-101';
+
+  // Use payment record's UPI URI if available (backend-generated), otherwise generate
+  const paymentUpiUri = (invoice?.upi_uri || '').trim();
+  const upiIntentUri = paymentUpiUri || (upiId
+    ? `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(upiName)}&am=${encodeURIComponent(amount)}&cu=INR&tn=${encodeURIComponent('Order ' + txnRef)}&tr=${encodeURIComponent(txnRef)}`
+    : null);
 
   return (
     <div
@@ -233,6 +392,26 @@ export const PaymentStatus = () => {
                 💡 +{Math.floor(invoice.total_amount / 10)} Loyalty Points will be credited once verified at counter.
               </div>
             )}
+            
+            {/* Razorpay Retry/Verify Button */}
+            {invoice?.payment_mode === 'RAZORPAY' && invoice?.payment_status !== 'PAID' && invoice?.razorpay_order_id && (
+              <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '0.75rem', marginTop: '0.25rem' }}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  block
+                  onClick={handleRazorpayRetry}
+                  disabled={razorpayRetryLoading}
+                  icon={RefreshCw}
+                  style={{ padding: '0.6rem' }}
+                >
+                  {razorpayRetryLoading ? 'Checking Payment Status...' : 'Check Payment Status / Retry'}
+                </Button>
+                <p style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '0.5rem', textAlign: 'center' }}>
+                  If you completed payment but it shows pending, click above to verify.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -247,45 +426,53 @@ export const PaymentStatus = () => {
               marginBottom: '1.5rem',
             }}
           >
-            <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#D97706', display: 'block', marginBottom: '0.75rem' }}>
-              SCAN TO PAY VIA ANY UPI APP
-            </span>
+            {upiIntentUri ? (
+              <>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#D97706', display: 'block', marginBottom: '0.75rem' }}>
+                  SCAN TO PAY VIA ANY UPI APP
+                </span>
 
-            <div style={{ display: 'inline-block', padding: '12px', background: '#FFFFFF', borderRadius: '12px', border: '1px solid #CBD5E1' }}>
-              <QRCodeSVG
-                value={upiIntentUri}
-                size={180}
-                level="M"
-                includeMargin={false}
-              />
-            </div>
+                <div style={{ display: 'inline-block', padding: '12px', background: '#FFFFFF', borderRadius: '12px', border: '1px solid #CBD5E1' }}>
+                  <QRCodeSVG
+                    value={upiIntentUri}
+                    size={180}
+                    level="M"
+                    includeMargin={false}
+                  />
+                </div>
 
-            <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: '#64748B' }}>
-              <span>UPI ID: </span>
-              <strong style={{ color: '#1A2B49' }}>{upiId}</strong>
-            </div>
+                <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: '#64748B' }}>
+                  <span>UPI ID: </span>
+                  <strong style={{ color: '#1A2B49' }}>{upiId}</strong>
+                </div>
 
-            {/* Mobile UPI Intent Button */}
-            <div style={{ marginTop: '1rem' }}>
-              <a
-                href={upiIntentUri}
-                className="btn btn-primary btn-block"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '0.5rem',
-                  textDecoration: 'none',
-                  padding: '0.75rem',
-                }}
-              >
-                <CreditCard size={18} />
-                <span>Pay via UPI App (GPay / PhonePe / Paytm)</span>
-              </a>
-              <p style={{ fontSize: '0.72rem', color: '#94A3B8', marginTop: '6px', margin: '6px 0 0' }}>
-                On Android/iOS mobile, tap above to launch your installed UPI app.
-              </p>
-            </div>
+                {/* Mobile UPI Intent Button */}
+                <div style={{ marginTop: '1rem' }}>
+                  <a
+                    href={upiIntentUri}
+                    className="btn btn-primary btn-block"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.5rem',
+                      textDecoration: 'none',
+                      padding: '0.75rem',
+                    }}
+                  >
+                    <CreditCard size={18} />
+                    <span>Pay via UPI App (GPay / PhonePe / Paytm)</span>
+                  </a>
+                  <p style={{ fontSize: '0.72rem', color: '#94A3B8', marginTop: '6px', margin: '6px 0 0' }}>
+                    On Android/iOS mobile, tap above to launch your installed UPI app.
+                  </p>
+                </div>
+              </>
+            ) : (
+              <div style={{ padding: '0.75rem', background: '#FFFBEB', borderRadius: '10px', color: '#B45309', fontSize: '0.85rem' }}>
+                ⚠️ <strong>UPI Not Configured:</strong> This merchant has not configured their UPI ID yet. Please pay with Cash at the counter.
+              </div>
+            )}
           </div>
         )}
 

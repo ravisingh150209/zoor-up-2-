@@ -42,7 +42,13 @@ export const CustomerBusinesses = () => {
     setLoading(true);
     try {
       const homeData = await customerService.getCustomerHome();
-      let list = (homeData && Array.isArray(homeData.businesses)) ? homeData.businesses : [];
+      const rawList = (homeData && Array.isArray(homeData.businesses)) ? homeData.businesses : [];
+      const seenIds = new Set();
+      let list = rawList.filter(b => {
+        if (!b?.id || seenIds.has(b.id)) return false;
+        seenIds.add(b.id);
+        return true;
+      });
 
       if (category && category !== 'All') {
         list = list.filter(b => b.category && b.category.toLowerCase().includes(category.toLowerCase()));

@@ -197,34 +197,32 @@ def calculate_available_tables(
 @customer_table_router.get("/tables")
 def get_customer_tables(
     business_id: Optional[str] = Query(None),
-    current_user: Optional[dict] = Depends(get_optional_current_user)
+    current_user: dict = Depends(require_role([ROLE_CUSTOMER])),
 ):
-    """Returns available tables only for the authenticated customer's connected business."""
+    """Returns available tables only for the authenticated customer's connected business(es)."""
     businesses_col = get_collection("businesses")
-    biz_id = None
+    cb_col = get_collection("customer_businesses")
+    customer_id = current_user.get("customer_id") or current_user.get("id")
 
-    if current_user:
-        customer_id = current_user.get("customer_id") or current_user.get("id")
-        cb_col = get_collection("customer_businesses")
-        cb = cb_col.find_one({"customer_id": customer_id, "status": "active"})
-        if cb:
-            biz_id = cb["business_id"]
+    # Get all connected businesses for this customer
+    connections = list(cb_col.find({"customer_id": customer_id, "status": "active"}))
+    connected_biz_ids = {c["business_id"] for c in connections if c.get("business_id")}
 
-    if business_id and current_user:
-        requested_biz = businesses_col.find_one({"id": business_id.strip()}) or businesses_col.find_one({"slug": business_id.strip()})
-        if requested_biz:
-            allowed_connections = set(
-                c.get("business_id") for c in get_collection("customer_businesses").find({"customer_id": current_user.get("customer_id") or current_user.get("id"), "status": "active"})
-            )
-            if requested_biz["id"] not in allowed_connections:
-                return []
-            biz_id = requested_biz["id"]
-
-    if not biz_id:
+    if not connected_biz_ids:
         return []
 
+    # If business_id is provided, verify it's in the connected businesses
+    if business_id:
+        requested_biz = businesses_col.find_one({"id": business_id.strip()}) or businesses_col.find_one({"slug": business_id.strip()})
+        if not requested_biz or requested_biz["id"] not in connected_biz_ids:
+            return []
+        target_biz_ids = {requested_biz["id"]}
+    else:
+        # Return tables for all connected businesses
+        target_biz_ids = connected_biz_ids
+
     tables_col = get_collection("tables")
-    tables = tables_col.find({"business_id": biz_id, "is_active": True})
+    tables = tables_col.find({"business_id": {"$in": list(target_biz_ids)}, "is_active": True})
     return [
         {
             "id": t["id"],
@@ -233,7 +231,8 @@ def get_customer_tables(
             "section": t.get("section") or t.get("location", "Main Dining"),
             "location": t.get("section") or t.get("location", "Main Dining"),
             "capacity": t.get("capacity", 4),
-            "is_active": t.get("is_active", True)
+            "is_active": t.get("is_active", True),
+            "business_id": t.get("business_id")
         }
         for t in tables
     ]
@@ -243,9 +242,15 @@ def get_customer_table_availability(
     business_id: str = Query(...),
     date: str = Query(..., description="YYYY-MM-DD"),
     time: str = Query(..., description="HH:MM"),
-    guests: int = Query(2, ge=1)
+    guests: int = Query(2, ge=1),
+    current_user: dict = Depends(require_role([ROLE_CUSTOMER])),
 ):
-    """Return tables available for that slot."""
+    """Return tables available for that slot. Enforces customer-business connection."""
+    cb_col = get_collection("customer_businesses")
+    customer_id = current_user.get("customer_id") or current_user.get("id")
+    connection = cb_col.find_one({"customer_id": customer_id, "business_id": business_id, "status": "active"})
+    if not connection:
+        raise HTTPException(status_code=403, detail="You are not connected to this business.")
     return calculate_available_tables(business_id, date, time, guests)
 
 def handle_create_reservation(
@@ -305,17 +310,7 @@ def handle_create_reservation(
             raise HTTPException(status_code=404, detail="Business partner not found.")
         allowed_business_ids = {item.get("business_id") for item in cb_col.find({"customer_id": customer_id, "status": "active"})}
         if biz["id"] not in allowed_business_ids:
-            if (biz.get("status") or "").upper() == "ACTIVE":
-                cb_col.insert_one({
-                    "id": f"cb_{uuid.uuid4().hex[:10]}",
-                    "customer_id": customer_id,
-                    "business_id": biz["id"],
-                    "source": "table_booking",
-                    "status": "active",
-                    "created_at": datetime.now().isoformat()
-                })
-            else:
-                raise HTTPException(status_code=403, detail="This business is not connected to your account.")
+            raise HTTPException(status_code=403, detail="You are not connected to this business. Please connect via QR scan first.")
         actual_biz_id = biz["id"]
     elif resolved_connection:
         actual_biz_id = resolved_connection["business_id"]
@@ -519,6 +514,7 @@ def cancel_customer_reservation(
 @router.get("")
 def get_tables_business(
     business_id: Optional[str] = Query(None),
+    active_only: bool = Query(False),
     current_user: Optional[dict] = Depends(get_optional_current_user)
 ):
     """Business owner table list."""
@@ -527,7 +523,11 @@ def get_tables_business(
 
     biz_id = _resolve_business_for_owner(current_user, business_id)
 
-    tables = get_collection("tables").find({"business_id": biz_id})
+    filters = {"business_id": biz_id}
+    if active_only:
+        filters["is_active"] = True
+
+    tables = get_collection("tables").find(filters)
     return [
         {
             "id": t["id"],
@@ -535,6 +535,7 @@ def get_tables_business(
             "name": t.get("name") or t.get("table_number"),
             "table_number": t.get("name") or t.get("table_number"),
             "section": t.get("section") or t.get("location", "Main Dining"),
+            "location": t.get("section") or t.get("location", "Main Dining"),
             "capacity": t.get("capacity", 4),
             "status": "available",
             "is_active": t.get("is_active", True),
@@ -745,8 +746,15 @@ def get_available_tables_legacy(
     business_id: str,
     date: str = Query(..., description="YYYY-MM-DD"),
     time: str = Query(..., description="HH:MM"),
-    party_size: int = Query(2, ge=1)
+    party_size: int = Query(2, ge=1),
+    current_user: dict = Depends(require_role([ROLE_CUSTOMER])),
 ):
+    """Legacy endpoint - return available tables with customer-business authorization."""
+    cb_col = get_collection("customer_businesses")
+    customer_id = current_user.get("customer_id") or current_user.get("id")
+    connection = cb_col.find_one({"customer_id": customer_id, "business_id": business_id, "status": "active"})
+    if not connection:
+        raise HTTPException(status_code=403, detail="You are not connected to this business.")
     return calculate_available_tables(business_id, date, time, party_size)
 
 @router.get("/bookings/customer/{customer_id}")

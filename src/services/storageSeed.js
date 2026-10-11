@@ -129,9 +129,6 @@ export const localDB = {
   getRewards: () => isProductionEnvironment() ? [] : getStored('rewards', []),
   saveRewards: (data) => isProductionEnvironment() ? null : setStored('rewards', data),
 
-  getPayments: () => getStored('payments', []),
-  savePayments: (data) => setStored('payments', data),
-
   // Table Booking System Collections
   getTables: () => getStored('tables', []),
   saveTables: (data) => setStored('tables', data),
@@ -165,6 +162,9 @@ if (typeof localStorage !== 'undefined') {
 }
 
 export const isProductionEnvironment = () => {
-  return true;
+  if (typeof import.meta !== 'undefined' && import.meta.env) {
+    return import.meta.env.MODE === 'production' || import.meta.env.VITE_API_URL?.includes('onrender.com');
+  }
+  return false;
 };
 

@@ -1,5 +1,5 @@
 // ZOOR UP Production Service Worker (PWA)
-const CACHE_NAME = 'zoorup-pwa-v3';
+const CACHE_NAME = 'zoorup-pwa-v6';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -30,6 +30,13 @@ self.addEventListener('activate', (event) => {
       );
     }).then(() => self.clients.claim())
   );
+});
+
+// Notify clients of new version
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 // Fetch Event - Network-first for APIs, Cache-first / stale-while-revalidate for static files

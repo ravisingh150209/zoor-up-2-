@@ -382,52 +382,43 @@ export const loyaltyService = {
     const cleanCode = (code || '').trim().toUpperCase();
     if (!cleanCode) return { valid: false, error: 'Enter a coupon code' };
 
+    const authUser = authStorage.getUser();
+    const customerId = authUser?.customer_id || authUser?.id;
+
     try {
-      let offers = [];
-      const res = await fetch(`${API_BASE}/api/business/vouchers`, {
-        headers: { ...authStorage.getAuthHeaders(), 'Accept': 'application/json' }
+      const serverRes = await fetch(`${API_BASE}/api/coupons/validate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...authStorage.getAuthHeaders(),
+        },
+        body: JSON.stringify({
+          business_id: businessId,
+          code: cleanCode,
+          subtotal: Number(orderTotal) || 0,
+          customer_id: customerId,
+        }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        const raw = Array.isArray(data.vouchers) ? data.vouchers : (Array.isArray(data) ? data : []);
-        offers = raw.map(formatVoucherAsOffer);
-      } else {
-        const custRes = await fetch(`${API_BASE}/api/customer/vouchers`, {
-          headers: { ...authStorage.getAuthHeaders(), 'Accept': 'application/json' }
-        });
-        if (custRes.ok) {
-          const custData = await custRes.json();
-          offers = (custData.vouchers || []).map(formatVoucherAsOffer);
-        }
+
+      const serverData = await serverRes.json().catch(() => null);
+      if (serverRes.ok && serverData?.valid) {
+        return {
+          valid: true,
+          offer: serverData.offer || { code: cleanCode, discount_type: serverData.discount_type, discount_val: serverData.discount_value },
+          discountAmount: serverData.discount_amount,
+          new_subtotal: serverData.new_subtotal,
+          tax: serverData.tax,
+          new_total: serverData.new_total,
+        };
       }
-
-      const offer = offers.find(
-        o => o.code.toUpperCase() === cleanCode && (!businessId || o.business_id === businessId) && o.active
-      );
-
-      if (!offer) {
-        return { valid: false, error: 'Invalid coupon code or expired promo' };
+      if (serverData?.detail) {
+        return { valid: false, error: serverData.detail };
       }
-
-      if (Number(orderTotal) < Number(offer.min_order)) {
-        return { valid: false, error: `Minimum order of ₹${offer.min_order} required for this coupon` };
+      if (serverData?.error) {
+        return { valid: false, error: serverData.error };
       }
-
-      let discountAmount = 0;
-      if (offer.discount_type === 'PERCENTAGE') {
-        discountAmount = Math.round((Number(orderTotal) * Number(offer.discount_val)) / 100);
-        if (offer.max_discount && discountAmount > offer.max_discount) {
-          discountAmount = offer.max_discount;
-        }
-      } else {
-        discountAmount = Math.min(Number(orderTotal), Number(offer.discount_val));
-      }
-
-      return {
-        valid: true,
-        offer,
-        discountAmount,
-      };
+      return { valid: false, error: serverData?.message || 'Invalid coupon code or expired promo' };
     } catch (err) {
       return { valid: false, error: 'Unable to validate coupon at this time' };
     }

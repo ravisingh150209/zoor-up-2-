@@ -164,7 +164,7 @@ export const ImageUploader = ({
         capture="environment"
         style={{ display: 'none' }}
         onChange={(e) => e.target.files?.[0] && handleFileSelected(e.target.files[0])}
-        disabled={disabled || uploading}
+        disabled={disabled || uploading}zIndex
       />
 
       {/* Main Upload Box */}
@@ -202,6 +202,8 @@ export const ImageUploader = ({
                 objectFit: aspectRatio === 'cover' || aspectRatio === 'banner' ? 'cover' : 'contain',
                 display: 'block',
               }}
+              loading="lazy"
+              decoding="async"
             />
 
             {/* Hover / Overlay Controls */}
