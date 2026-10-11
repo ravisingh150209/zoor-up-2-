@@ -46,6 +46,7 @@ export const PublicCheckout = () => {
 
   const [business, setBusiness] = useState(null);
   const [upiConfig, setUpiConfig] = useState({ upi_id: '', upi_name: '', upi_notes: '', upi_enabled: false });
+  const [loadingUpi, setLoadingUpi] = useState(true);
   const [customerName, setCustomerName] = useState(user?.name || '');
   const [customerPhone, setCustomerPhone] = useState(user?.phone || '');
   const [couponCode, setCouponCode] = useState('');
@@ -68,6 +69,7 @@ export const PublicCheckout = () => {
 
   const loadBusiness = async () => {
     try {
+      setLoadingUpi(true);
       let b = null;
       const targetBizIdentifier = businessId || items[0]?.business_id || businessSlug;
       if (targetBizIdentifier) {
@@ -105,6 +107,8 @@ export const PublicCheckout = () => {
     } catch (e) {
       console.error('Error loading checkout business:', e);
       addToast(getErrorMessage(e) || 'Failed to load store information', 'error');
+    } finally {
+      setLoadingUpi(false);
     }
   };
 
@@ -542,8 +546,39 @@ export const PublicCheckout = () => {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {/* Option 1: Direct Store UPI */}
-            {upiConfig?.upi_id ? (
+            {/* Option 1: Pay via UPI */}
+            {loadingUpi ? (
+              <div
+                style={{
+                  padding: '1.25rem',
+                  borderRadius: '14px',
+                  border: '1.5px solid #E2E8F0',
+                  background: '#F8FAFC',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.85rem',
+                }}
+              >
+                <div
+                  style={{
+                    width: '48px',
+                    height: '48px',
+                    borderRadius: '12px',
+                    background: '#E2E8F0',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#94A3B8',
+                  }}
+                >
+                  <QrCode size={24} />
+                </div>
+                <div>
+                  <strong style={{ fontSize: '0.95rem', color: '#1A2B49' }}>Loading Store UPI Details...</strong>
+                  <p style={{ margin: '2px 0 0', fontSize: '0.8rem', color: '#64748B' }}>Fetching authoritative store payment QR</p>
+                </div>
+              </div>
+            ) : upiConfig?.upi_id ? (
               <div
                 onClick={() => setPaymentMethod('UPI')}
                 style={{
@@ -713,28 +748,27 @@ export const PublicCheckout = () => {
                 style={{
                   padding: '1rem',
                   borderRadius: '14px',
-                  border: '1.5px dashed #FCA5A5',
-                  background: '#FEF2F2',
+                  border: '1.5px dashed #CBD5E1',
+                  background: '#F8FAFC',
                   display: 'flex',
                   alignItems: 'flex-start',
                   gap: '0.75rem',
-                  color: '#991B1B',
                   fontSize: '0.85rem',
                 }}
               >
-                <AlertCircle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+                <AlertCircle size={20} style={{ color: '#D97706', flexShrink: 0, marginTop: '2px' }} />
                 <div>
-                  <strong style={{ display: 'block', fontSize: '0.9rem' }}>
-                    This business has not configured UPI payments yet.
+                  <strong style={{ display: 'block', fontSize: '0.9rem', color: '#1A2B49' }}>
+                    Pay via UPI (Not Configured by Store)
                   </strong>
-                  <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: '#7F1D1D' }}>
-                    Direct store UPI transfer is unavailable. Please select "Pay Cash at Counter" to complete your order.
+                  <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: '#64748B' }}>
+                    This merchant has not set up direct UPI transfers yet. Please select "Cash on Counter" below.
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Option 2: Pay Cash at Counter */}
+            {/* Option 2: Cash on Counter */}
             <div
               onClick={() => setPaymentMethod('CASH')}
               style={{
@@ -768,10 +802,10 @@ export const PublicCheckout = () => {
 
               <div style={{ flex: 1, minWidth: 0 }}>
                 <strong style={{ fontSize: '1rem', color: '#1A2B49', display: 'block' }}>
-                  Pay Cash at Counter
+                  Cash on Counter
                 </strong>
                 <p style={{ fontSize: '0.8rem', color: '#64748B', margin: '2px 0 0' }}>
-                  Pay cash directly when you pick up or dine
+                  Pay cash directly at the counter upon pickup or dine-in
                 </p>
               </div>
 
@@ -813,7 +847,7 @@ export const PublicCheckout = () => {
         >
           {paymentMethod === 'UPI'
             ? `Place Order via Store UPI — ₹${grandTotal}`
-            : `Place Cash Order — ₹${grandTotal}`}
+            : `Place Order (Cash on Counter) — ₹${grandTotal}`}
         </Button>
       </div>
     </div>
