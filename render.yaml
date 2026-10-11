@@ -50,3 +50,5 @@ services:
         sync: false
       - key: RAZORPAY_KEY_SECRET
         sync: false
+      - key: BUILD_VERSION
+        value: "2026-10-11-v2"
