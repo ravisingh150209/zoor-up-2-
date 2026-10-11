@@ -8,13 +8,12 @@ import {
   ArrowRight,
   ExternalLink,
   Store,
-  CreditCard,
   AlertCircle,
   Copy,
   Receipt,
   Smartphone,
-  Lock,
-  RefreshCw
+  RefreshCw,
+  Check,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import confetti from 'canvas-confetti';
@@ -24,22 +23,6 @@ import { orderService } from '../../services/orderService';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { useToast } from '../../context/ToastContext';
-import { isProductionEnvironment } from '../../services/storageSeed.js';
-
-// Load Razorpay script dynamically
-const loadRazorpayScript = () => {
-  return new Promise((resolve, reject) => {
-    if (window.Razorpay) {
-      resolve(true);
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-    script.onload = () => resolve(true);
-    script.onerror = () => reject(new Error('Failed to load Razorpay script'));
-    document.body.appendChild(script);
-  });
-};
 
 export const PaymentStatus = () => {
   const { orderId, txnId } = useParams();
@@ -51,6 +34,7 @@ export const PaymentStatus = () => {
   const [business, setBusiness] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [copiedUpi, setCopiedUpi] = useState(false);
 
   useEffect(() => {
     loadTransactionData();
@@ -69,15 +53,14 @@ export const PaymentStatus = () => {
       let bizId = null;
       const isPaymentId = idToLoad.startsWith('pay_');
 
-      // 1. If payment_id, try payment status API first (includes Razorpay payments)
+      // 1. If payment_id, fetch payment record
       if (isPaymentId) {
         try {
           const payment = await orderService.getPaymentById(idToLoad);
           if (payment && (payment.payment_id || payment.id)) {
-            // Fetch order details using order_id from payment
-            const orderId = payment.order_id;
+            const ordId = payment.order_id;
             try {
-              const ord = await orderService.getOrderById(orderId);
+              const ord = await orderService.getOrderById(ordId);
               if (ord && (ord.id || ord.order_id)) {
                 inv = {
                   id: ord.invoice_id || ord.id || ord.order_id,
@@ -91,42 +74,13 @@ export const PaymentStatus = () => {
                   payment_status: payment.status === 'pending' ? 'PENDING' : payment.status === 'paid' ? 'PAID' : payment.status.toUpperCase(),
                   order_type: ord.order_type || 'DINE_IN',
                   table_number: ord.table_number || null,
-                  razorpay_order_id: payment.razorpay_order_id,
-                  razorpay_payment_id: payment.razorpay_payment_id,
+                  upi_uri: payment.upi_uri,
+                  upi_id: payment.upi_id,
                   verified: payment.verified,
                 };
                 bizId = ord.business_id;
               }
             } catch (_) {}
-          }
-        } catch (_) {}
-      }
-
-      // 1b. Try Razorpay-specific payment status if we have a Razorpay order ID
-      if (!inv && idToLoad.startsWith('order_')) {
-        try {
-          const payment = await orderService.getRazorpayPaymentStatus(idToLoad);
-          if (payment) {
-            const ord = await orderService.getOrderById(payment.order_id);
-            if (ord) {
-              inv = {
-                id: ord.invoice_id || ord.id || ord.order_id,
-                order_id: ord.id || ord.order_id,
-                business_id: ord.business_id,
-                customer_name: ord.customer_name,
-                customer_phone: ord.customer_phone,
-                items: ord.items || [],
-                total_amount: payment.amount || ord.total || ord.total_amount || ord.subtotal || 0,
-                payment_mode: 'RAZORPAY',
-                payment_status: payment.status === 'paid' ? 'PAID' : payment.status.toUpperCase(),
-                order_type: ord.order_type || 'DINE_IN',
-                table_number: ord.table_number || null,
-                razorpay_order_id: payment.razorpay_order_id,
-                razorpay_payment_id: payment.razorpay_payment_id,
-                verified: payment.verified,
-              };
-              bizId = ord.business_id;
-            }
           }
         } catch (_) {}
       }
@@ -173,9 +127,21 @@ export const PaymentStatus = () => {
 
       setInvoice(inv);
       if (bizId) {
-        const b = await businessService.getBusiness(bizId);
+        let b = await businessService.getBusiness(bizId);
+        try {
+          const upiData = await businessService.getPublicBusinessUpi(bizId);
+          if (upiData?.upi_id) {
+            b = {
+              ...b,
+              upi_id: upiData.upi_id,
+              upi_name: upiData.upi_name || b?.name,
+              upi_notes: upiData.upi_notes || 'ZOOR UP Store Payment',
+            };
+          }
+        } catch (_) {}
         setBusiness(b);
       }
+
       if (inv.payment_status === 'PAID') {
         try {
           confetti({ particleCount: 70, spread: 70, origin: { y: 0.5 } });
@@ -191,86 +157,18 @@ export const PaymentStatus = () => {
   const copyUpiId = (id) => {
     if (navigator.clipboard) {
       navigator.clipboard.writeText(id);
-      addToast('Business UPI ID copied!', 'success');
+      setCopiedUpi(true);
+      addToast('Business UPI ID copied to clipboard', 'info');
+      setTimeout(() => setCopiedUpi(false), 2000);
     }
   };
 
-  const [razorpayRetryLoading, setRazorpayRetryLoading] = useState(false);
-
-  const handleRazorpayRetry = async () => {
-    if (!invoice?.razorpay_order_id) return;
-    setRazorpayRetryLoading(true);
-    try {
-      // Try to get updated payment status from backend
-      const payment = await orderService.getRazorpayPaymentStatus(invoice.razorpay_order_id);
-      if (payment && payment.status === 'paid') {
-        addToast('Payment verified successfully!', 'success');
-        // Reload the page to show updated status
-        window.location.reload();
-      } else if (payment && (payment.status === 'pending' || payment.status === 'created')) {
-        // Payment not yet completed, offer to retry checkout
-        addToast('Payment not yet completed. Opening Razorpay checkout...', 'info');
-        // Reload Razorpay checkout
-        await loadRazorpayScript();
-        const options = {
-          key: payment.razorpay_key_id || (await orderService.createRazorpayOrder(invoice.order_id, invoice.business_id))?.razorpay_key_id,
-          amount: payment.amount_paise || Math.round(invoice.total_amount * 100),
-          currency: 'INR',
-          name: business?.name || 'ZOOR UP Store',
-          description: `Order ${invoice.order_id}`,
-          order_id: invoice.razorpay_order_id,
-          handler: async (response) => {
-            try {
-              const verifyResult = await orderService.verifyRazorpayPayment({
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature,
-                order_id: invoice.order_id,
-              });
-              addToast('Payment verified successfully!', 'success');
-              navigate(`/order-success/${invoice.order_id}`);
-            } catch (verifyErr) {
-              console.error('Razorpay verification failed:', verifyErr);
-              addToast(getErrorMessage(verifyErr) || 'Payment verification failed', 'error');
-            }
-          },
-          prefill: {
-            name: invoice.customer_name || '',
-            contact: invoice.customer_phone || '',
-          },
-          theme: { color: '#00B89C' },
-          modal: {
-            ondismiss: () => {
-              addToast('Payment cancelled.', 'warning');
-            },
-          },
-        };
-        const rzp = new window.Razorpay(options);
-        rzp.on('payment.failed', (response) => {
-          console.error('Razorpay payment failed:', response.error);
-          const message = getErrorMessage(response?.error || response, 'Payment failed. Please try again.');
-          addToast(message, 'error');
-        });
-        rzp.open();
-      } else {
-        addToast(`Payment status: ${payment?.status || 'unknown'}`, 'info');
-      }
-    } catch (e) {
-      console.error('Razorpay retry failed:', e);
-      addToast(getErrorMessage(e) || 'Failed to check payment status', 'error');
-    } finally {
-      setRazorpayRetryLoading(false);
-    }
-  };
-
-  // UPI Payment Link from verified business record
-  // Prefer backend-generated UPI URI from payment record if available
-  const upiId = (business?.upi_id || '').trim();
+  const upiId = (invoice?.upi_id || business?.upi_id || '').trim();
   const upiName = (business?.upi_name || business?.name || 'Local Store').trim();
   const amount = Number(invoice?.total_amount || invoice?.total || 0).toFixed(2);
-  const txnRef = invoice?.order_id || invoice?.id || 'TXN-101';
+  const txnRef = invoice?.order_id || invoice?.id || 'TXN';
 
-  // Use payment record's UPI URI if available (backend-generated), otherwise generate
+  // Construct safe UPI payment URI strictly matching store settings
   const paymentUpiUri = (invoice?.upi_uri || '').trim();
   const upiIntentUri = paymentUpiUri || (upiId
     ? `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(upiName)}&am=${encodeURIComponent(amount)}&cu=INR&tn=${encodeURIComponent('Order ' + txnRef)}&tr=${encodeURIComponent(txnRef)}`
@@ -319,14 +217,18 @@ export const PaymentStatus = () => {
 
         {/* Title */}
         <h2 style={{ fontSize: '1.45rem', fontWeight: 800, color: '#1A2B49', margin: '0 0 0.35rem' }}>
-          {error ? 'Payment record unavailable' : invoice?.payment_status === 'PAID' ? 'Payment Verified & Confirmed!' : 'Purchase Recorded — Payment Pending'}
+          {error
+            ? 'Payment Record Unavailable'
+            : invoice?.payment_status === 'PAID'
+            ? 'Payment Verified & Confirmed!'
+            : 'Order Placed — Payment Pending Verification'}
         </h2>
         <p style={{ fontSize: '0.85rem', color: '#64748B', margin: '0 0 1.5rem' }}>
           {error || (invoice?.payment_status === 'PAID'
             ? 'Thank you! Your transaction is complete and verified.'
             : invoice?.payment_mode === 'CASH'
             ? 'Please pay cash at the store counter. The merchant will confirm your purchase.'
-            : 'Scan the UPI QR code or open your UPI app to complete payment.')}
+            : 'Scan the store UPI QR code below or open your UPI app to complete payment.')}
         </p>
 
         {/* Transaction Card */}
@@ -351,7 +253,7 @@ export const PaymentStatus = () => {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ color: '#64748B' }}>Invoice / Ref:</span>
+              <span style={{ color: '#64748B' }}>Order / Ref:</span>
               <strong style={{ fontFamily: 'monospace', color: '#1A2B49' }}>{invoice.id}</strong>
             </div>
 
@@ -373,13 +275,13 @@ export const PaymentStatus = () => {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ color: '#64748B' }}>Payment Method:</span>
-              <span style={{ fontWeight: 600 }}>{invoice.payment_mode}</span>
+              <Badge variant="secondary">{invoice.payment_mode}</Badge>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ color: '#64748B' }}>Verification Status:</span>
               <Badge variant={invoice.payment_status === 'PAID' ? 'success' : 'warning'}>
-                {invoice.payment_status === 'PAID' ? 'PAID / VERIFIED' : 'AWAITING VERIFICATION'}
+                {invoice.payment_status === 'PAID' ? 'PAID / VERIFIED' : 'AWAITING STORE VERIFICATION'}
               </Badge>
             </div>
 
@@ -389,27 +291,7 @@ export const PaymentStatus = () => {
               </div>
             ) : (
               <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '0.5rem', color: '#D97706', fontSize: '0.78rem' }}>
-                💡 +{Math.floor(invoice.total_amount / 10)} Loyalty Points will be credited once verified at counter.
-              </div>
-            )}
-            
-            {/* Razorpay Retry/Verify Button */}
-            {invoice?.payment_mode === 'RAZORPAY' && invoice?.payment_status !== 'PAID' && invoice?.razorpay_order_id && (
-              <div style={{ borderTop: '1px solid #E2E8F0', paddingTop: '0.75rem', marginTop: '0.25rem' }}>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  block
-                  onClick={handleRazorpayRetry}
-                  disabled={razorpayRetryLoading}
-                  icon={RefreshCw}
-                  style={{ padding: '0.6rem' }}
-                >
-                  {razorpayRetryLoading ? 'Checking Payment Status...' : 'Check Payment Status / Retry'}
-                </Button>
-                <p style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '0.5rem', textAlign: 'center' }}>
-                  If you completed payment but it shows pending, click above to verify.
-                </p>
+                💡 Direct UPI payments transfer directly into the store account. The store confirms verification at counter upon receipt.
               </div>
             )}
           </div>
@@ -419,7 +301,7 @@ export const PaymentStatus = () => {
         {invoice?.payment_mode === 'UPI' && invoice?.payment_status !== 'PAID' && (
           <div
             style={{
-              border: '1px solid #E2E8F0',
+              border: '1px solid #BBF7D0',
               borderRadius: '16px',
               padding: '1.25rem',
               background: '#FFFFFF',
@@ -428,43 +310,75 @@ export const PaymentStatus = () => {
           >
             {upiIntentUri ? (
               <>
-                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#D97706', display: 'block', marginBottom: '0.75rem' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#059669', display: 'block', marginBottom: '0.75rem' }}>
                   SCAN TO PAY VIA ANY UPI APP
                 </span>
 
-                <div style={{ display: 'inline-block', padding: '12px', background: '#FFFFFF', borderRadius: '12px', border: '1px solid #CBD5E1' }}>
-                  <QRCodeSVG
-                    value={upiIntentUri}
-                    size={180}
-                    level="M"
-                    includeMargin={false}
-                  />
+                <div
+                  style={{
+                    display: 'inline-block',
+                    padding: '12px',
+                    background: '#FFFFFF',
+                    borderRadius: '12px',
+                    border: '2px solid #E2E8F0',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.04)',
+                    marginBottom: '0.75rem',
+                  }}
+                >
+                  <QRCodeSVG value={upiIntentUri} size={180} level="M" />
                 </div>
 
-                <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: '#64748B' }}>
-                  <span>UPI ID: </span>
-                  <strong style={{ color: '#1A2B49' }}>{upiId}</strong>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '0.65rem 0.85rem',
+                    background: '#F8FAFC',
+                    borderRadius: '8px',
+                    border: '1px solid #E2E8F0',
+                    marginBottom: '0.85rem',
+                    fontSize: '0.8rem',
+                  }}
+                >
+                  <div style={{ textAlign: 'left' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748B' }}>Store UPI ID</div>
+                    <strong style={{ fontFamily: 'var(--font-mono)', color: '#1A2B49' }}>{upiId}</strong>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    icon={copiedUpi ? CheckCircle2 : Copy}
+                    onClick={() => copyUpiId(upiId)}
+                  >
+                    {copiedUpi ? 'Copied' : 'Copy ID'}
+                  </Button>
                 </div>
 
                 {/* Mobile UPI Intent Button */}
-                <div style={{ marginTop: '1rem' }}>
+                <div>
                   <a
                     href={upiIntentUri}
-                    className="btn btn-primary btn-block"
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       gap: '0.5rem',
-                      textDecoration: 'none',
                       padding: '0.75rem',
+                      borderRadius: '10px',
+                      background: '#059669',
+                      color: '#FFFFFF',
+                      fontWeight: 700,
+                      textDecoration: 'none',
+                      fontSize: '0.9rem',
                     }}
                   >
-                    <CreditCard size={18} />
-                    <span>Pay via UPI App (GPay / PhonePe / Paytm)</span>
+                    <Smartphone size={18} />
+                    <span>Pay in UPI App (GPay / PhonePe / Paytm)</span>
                   </a>
-                  <p style={{ fontSize: '0.72rem', color: '#94A3B8', marginTop: '6px', margin: '6px 0 0' }}>
-                    On Android/iOS mobile, tap above to launch your installed UPI app.
+                  <p style={{ fontSize: '0.72rem', color: '#64748B', marginTop: '6px' }}>
+                    Tap above on mobile to launch your installed UPI app.
                   </p>
                 </div>
               </>
@@ -478,6 +392,9 @@ export const PaymentStatus = () => {
 
         {/* Navigation Buttons */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+          <Button variant="outline" icon={RefreshCw} onClick={loadTransactionData} loading={loading}>
+            Refresh Status
+          </Button>
           {business?.slug && (
             <Link to={`/m/${business.slug}`} className="btn btn-secondary btn-block">
               Back to Store Menu

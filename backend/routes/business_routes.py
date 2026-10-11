@@ -974,14 +974,36 @@ def get_public_store_upi(business_id: str):
     biz, is_active = find_business_by_identifier(business_id, businesses_col)
     if not biz:
         raise HTTPException(status_code=404, detail="Store not found.")
+
+    saved_upi_id = (
+        (biz.get("metadata") or {}).get("upi_id") or
+        biz.get("upi_id") or
+        (biz.get("payment_settings") or {}).get("upi_id") or
+        biz.get("vpa") or
+        ""
+    ).strip()
+
+    saved_upi_name = (
+        (biz.get("metadata") or {}).get("upi_name") or
+        biz.get("upi_name") or
+        biz.get("name") or
+        "Store"
+    ).strip()
+
+    saved_upi_notes = (
+        (biz.get("metadata") or {}).get("upi_notes") or
+        biz.get("upi_notes") or
+        "ZOOR UP Store Payment"
+    ).strip()
+
     return {
         "success": True,
         "business_id": biz["id"],
         "business_name": biz.get("name", "Store"),
-        "upi_id": biz.get("upi_id", ""),
-        "upi_name": biz.get("upi_name", biz.get("name", "Store")),
-        "upi_notes": biz.get("upi_notes", "ZOOR UP Store Payment"),
-        "upi_enabled": bool(biz.get("upi_id")),
+        "upi_id": saved_upi_id,
+        "upi_name": saved_upi_name,
+        "upi_notes": saved_upi_notes,
+        "upi_enabled": bool(saved_upi_id and biz.get("upi_enabled", True)),
     }
 
 @router.get("/onboarding/status")

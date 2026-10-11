@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { QRCodeSVG } from 'qrcode.react';
 
 import { getErrorMessage } from '../../utils/errorUtils';
 import {
@@ -19,7 +20,10 @@ import {
   Lock,
   CreditCard,
   Globe,
-  Check
+  Check,
+  QrCode,
+  Copy,
+  ExternalLink,
 } from 'lucide-react';
 import { useCart } from '../../context/CartContext';
 import { billingService } from '../../services/billingService';
@@ -34,41 +38,6 @@ import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { notificationService, NOTIFICATION_TYPES } from '../../services/notificationService';
 
-// Payment method badge component
-const PaymentBadge = ({ icon, label, selected }) => (
-  <span style={{
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '0.3rem',
-    padding: '0.3rem 0.6rem',
-    fontSize: '0.65rem',
-    fontWeight: 600,
-    borderRadius: '999px',
-    color: selected ? '#00B89C' : '#94A3B8',
-    background: selected ? '#ECFDF5' : '#F8FAFC',
-    border: selected ? '1px solid #A7F3D0' : '1px solid #E2E8F0',
-    transition: 'all 0.15s ease',
-  }}>
-    <span style={{ color: selected ? '#00B89C' : '#94A3B8' }}>{icon}</span>
-    {label}
-  </span>
-);
-
-// Load Razorpay script dynamically
-const loadRazorpayScript = () => {
-  return new Promise((resolve, reject) => {
-    if (window.Razorpay) {
-      resolve(true);
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-    script.onload = () => resolve(true);
-    script.onerror = () => reject(new Error('Failed to load Razorpay script'));
-    document.body.appendChild(script);
-  });
-};
-
 export const PublicCheckout = () => {
   const { items, subtotal, clearCart, businessSlug, businessId } = useCart();
   const { user } = useAuth();
@@ -76,14 +45,15 @@ export const PublicCheckout = () => {
   const navigate = useNavigate();
 
   const [business, setBusiness] = useState(null);
+  const [upiConfig, setUpiConfig] = useState({ upi_id: '', upi_name: '', upi_notes: '', upi_enabled: false });
   const [customerName, setCustomerName] = useState(user?.name || '');
   const [customerPhone, setCustomerPhone] = useState(user?.phone || '');
   const [couponCode, setCouponCode] = useState('');
   const [appliedDiscount, setAppliedDiscount] = useState(0);
-  const [paymentMethod, setPaymentMethod] = useState('RAZORPAY'); // 'RAZORPAY' | 'CASH'
+  const [paymentMethod, setPaymentMethod] = useState('UPI'); // 'UPI' | 'CASH'
   const [placing, setPlacing] = useState(false);
   const placingRef = useRef(false);
-  const [razorpayLoading, setRazorpayLoading] = useState(false);
+  const [copiedUpi, setCopiedUpi] = useState(false);
 
   // Dining option & Table selection state
   const [orderType, setOrderType] = useState('DINE_IN'); // 'DINE_IN' | 'TAKEAWAY'
@@ -109,6 +79,28 @@ export const PublicCheckout = () => {
       if (b) {
         setBusiness(b);
         loadBusinessTables(b.id);
+
+        // Load authoritative UPI configuration strictly for this business
+        try {
+          const upiData = await businessService.getPublicBusinessUpi(b.id);
+          const hasUpi = Boolean(upiData?.upi_id && upiData?.upi_enabled !== false);
+          setUpiConfig({
+            upi_id: (upiData?.upi_id || '').trim(),
+            upi_name: (upiData?.upi_name || b.name || 'Store').trim(),
+            upi_notes: (upiData?.upi_notes || 'ZOOR UP Store Payment').trim(),
+            upi_enabled: hasUpi,
+          });
+
+          if (hasUpi) {
+            setPaymentMethod('UPI');
+          } else {
+            setPaymentMethod('CASH');
+          }
+        } catch (upiErr) {
+          console.warn('Could not load store UPI configuration:', upiErr);
+          setUpiConfig({ upi_id: '', upi_name: b.name || 'Store', upi_notes: '', upi_enabled: false });
+          setPaymentMethod('CASH');
+        }
       }
     } catch (e) {
       console.error('Error loading checkout business:', e);
@@ -132,6 +124,20 @@ export const PublicCheckout = () => {
 
   const taxAmount = Math.round((subtotal * 5) / 100);
   const grandTotal = Math.max(0, subtotal + taxAmount - appliedDiscount);
+
+  // Authoritatively construct business-specific UPI payment URI
+  const storeUpiUri = upiConfig?.upi_id
+    ? `upi://pay?pa=${encodeURIComponent(upiConfig.upi_id)}&pn=${encodeURIComponent(upiConfig.upi_name || business?.name || 'Store')}&am=${grandTotal.toFixed(2)}&cu=INR&tn=${encodeURIComponent(upiConfig.upi_notes || `Order at ${business?.name || 'Store'}`)}`
+    : '';
+
+  const handleCopyUpi = () => {
+    if (upiConfig?.upi_id) {
+      navigator.clipboard.writeText(upiConfig.upi_id);
+      setCopiedUpi(true);
+      addToast('Store UPI ID copied to clipboard', 'info');
+      setTimeout(() => setCopiedUpi(false), 2000);
+    }
+  };
 
   const handleApplyCoupon = async (e) => {
     e.preventDefault();
@@ -163,6 +169,11 @@ export const PublicCheckout = () => {
       return;
     }
 
+    if (paymentMethod === 'UPI' && !upiConfig?.upi_id) {
+      addToast('This business has not configured UPI payments yet. Please select Cash.', 'error');
+      return;
+    }
+
     let finalTableNumber = null;
     let finalTableId = null;
 
@@ -172,7 +183,7 @@ export const PublicCheckout = () => {
           addToast('Please select your dining table', 'error');
           return;
         }
-        const found = tables.find(t => t.id === selectedTableId);
+        const found = tables.find((t) => t.id === selectedTableId);
         finalTableId = found?.id || selectedTableId;
         finalTableNumber = found?.table_number || selectedTableNumber;
       } else {
@@ -199,116 +210,33 @@ export const PublicCheckout = () => {
         coupon_code: appliedDiscount > 0 ? couponCode.trim() : undefined,
       });
 
-      // Notify business of new in-store purchase
+      const orderRef = order.order_id || order.id || order.invoice_id;
+
+      // Notify business of incoming in-store order
       try {
         notificationService.createNotification({
           recipient_id: order.business_id,
           business_id: order.business_id,
           type: NOTIFICATION_TYPES.PAYMENT_PENDING,
           title: `New ${paymentMethod} Order: ₹${grandTotal} (${orderType === 'DINE_IN' ? `Table ${finalTableNumber}` : 'Takeaway'})`,
-          message: `${customerName.trim()} ordered items worth ₹${grandTotal} (${orderType === 'DINE_IN' ? `Table ${finalTableNumber}` : 'Takeaway'}). Verification required.`,
-          entity_id: order.order_id || order.id,
+          message: `${customerName.trim()} placed order ${orderRef} worth ₹${grandTotal}. Direct payment awaiting counter verification.`,
+          entity_id: orderRef,
           action_url: '/business/orders',
         }).catch(() => {});
       } catch (_) {}
 
       clearCart();
-      const orderRef = order.order_id || order.id || order.invoice_id;
 
-      if (paymentMethod === 'RAZORPAY') {
-        // Handle Razorpay checkout
+      if (paymentMethod === 'UPI') {
+        // Register direct UPI payment record with business's authoritative UPI ID
         try {
-          setRazorpayLoading(true);
-          const rzpOrder = await orderService.createRazorpayOrder(orderRef, business.id);
-          
-          if (!rzpOrder?.razorpay_order_id || !rzpOrder?.razorpay_key_id) {
-            throw new Error('Invalid Razorpay order response');
-          }
-          
-          // Load Razorpay script and open checkout
-          await loadRazorpayScript();
-          
-          const options = {
-            key: rzpOrder.razorpay_key_id,
-            amount: rzpOrder.amount_paise,
-            currency: rzpOrder.currency,
-            name: business?.name || 'ZOOR UP Store',
-            description: `Order ${orderRef}`,
-            order_id: rzpOrder.razorpay_order_id,
-            handler: async (response) => {
-              // Payment successful on frontend, now verify with backend
-              try {
-                setRazorpayLoading(true);
-                const verifyResult = await orderService.verifyRazorpayPayment({
-                  razorpay_order_id: response.razorpay_order_id,
-                  razorpay_payment_id: response.razorpay_payment_id,
-                  razorpay_signature: response.razorpay_signature,
-                  order_id: orderRef,
-                });
-                
-                addToast('Payment verified successfully!', 'success');
-                navigate(`/order-success/${orderRef}`);
-              } catch (verifyErr) {
-                console.error('Razorpay verification failed:', verifyErr);
-                const errMsg = getErrorMessage(verifyErr);
-                addToast(errMsg || 'Payment verification failed', 'error');
-                // Still navigate to order success but show pending status
-                navigate(`/payment-status/${rzpOrder.payment_id}`);
-              } finally {
-                setRazorpayLoading(false);
-              }
-            },
-            prefill: {
-              name: customerName.trim(),
-              contact: customerPhone.trim(),
-              email: user?.email || '',
-            },
-            notes: {
-              order_id: orderRef,
-              business_id: business.id,
-            },
-            theme: {
-              color: '#00B89C',
-            },
-            modal: {
-              ondismiss: () => {
-                // User cancelled the payment
-                try {
-                  orderService.recordRazorpayPaymentFailure({
-                    razorpay_order_id: rzpOrder.razorpay_order_id,
-                    error_code: 'CANCELLED_BY_USER',
-                    error_description: 'User dismissed checkout modal',
-                  });
-                } catch (_) {}
-                addToast('Payment cancelled. Your order is still pending.', 'warning');
-                navigate(`/payment-status/${rzpOrder.payment_id}`);
-              },
-            },
-          };
-          
-          const rzp = new window.Razorpay(options);
-          rzp.on('payment.failed', async (response) => {
-            console.error('Razorpay payment failed:', response.error);
-            try {
-              orderService.recordRazorpayPaymentFailure({
-                razorpay_order_id: rzpOrder.razorpay_order_id,
-                error_code: response?.error?.code || 'PAYMENT_FAILED',
-                error_description: response?.error?.description || 'Payment rejected by gateway',
-              });
-            } catch (_) {}
-            const message = getErrorMessage(response?.error || response, 'Payment failed. Please try again.');
-            addToast(message, 'error');
-            setRazorpayLoading(false);
-            navigate(`/payment-status/${rzpOrder.payment_id}`);
-          });
-          rzp.open();
-          
-        } catch (rzpErr) {
-          console.error('Razorpay checkout error:', rzpErr);
-          const errMsg = getErrorMessage(rzpErr);
-          addToast(errMsg || 'Failed to initiate Razorpay payment', 'error');
-          setRazorpayLoading(false);
-          navigate(`/order-success/${orderRef}`);
+          const upiPayment = await orderService.createUpiPayment(orderRef, business.id);
+          addToast('Order placed! Direct UPI payment pending store verification.', 'success');
+          navigate(`/payment-status/${upiPayment?.payment_id || orderRef}`);
+        } catch (upiErr) {
+          console.warn('Payment record intent creation note:', upiErr);
+          addToast('Order placed! Please complete UPI payment at counter.', 'info');
+          navigate(`/payment-status/${orderRef}`);
         }
       } else {
         // Cash payment
@@ -350,32 +278,36 @@ export const PublicCheckout = () => {
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        background: '#FAFAFB',
-        padding: '1.25rem 1rem 80px',
-        maxWidth: '560px',
-        margin: '0 auto',
-      }}
-    >
-      {/* Top Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
-        <Link to={businessSlug ? `/m/${businessSlug}` : '/customer'} className="btn-ghost" style={{ padding: '6px' }}>
-          <ArrowLeft size={20} />
-        </Link>
+    <div style={{ maxWidth: '640px', margin: '0 auto', padding: '1.5rem 1rem 3rem' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
+        <button
+          onClick={() => navigate(-1)}
+          style={{
+            background: '#F1F5F9',
+            border: 'none',
+            borderRadius: '10px',
+            padding: '8px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <ArrowLeft size={18} color="#1A2B49" />
+        </button>
         <div>
-          <h2 style={{ fontSize: '1.35rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>Review & Pay</h2>
-          {business?.name && (
-            <p style={{ fontSize: '0.8rem', color: '#64748B', margin: '2px 0 0' }}>
-              🏬 {business.name}
-            </p>
-          )}
+          <h2 style={{ fontSize: '1.35rem', fontWeight: 800, margin: 0, color: '#1A2B49' }}>
+            Checkout & Pay
+          </h2>
+          <p style={{ margin: '2px 0 0', fontSize: '0.82rem', color: '#64748B' }}>
+            Ordering directly from <strong style={{ color: '#1A2B49' }}>{business?.name || 'Store'}</strong>
+          </p>
         </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-        {/* Customer Information */}
+        {/* Customer Details */}
         <div
           className="card"
           style={{
@@ -397,8 +329,8 @@ export const PublicCheckout = () => {
               required
             />
             <Input
-              label="Mobile Number (for SMS & Loyalty)"
-              placeholder="e.g. 9876543210"
+              label="Contact Mobile Number"
+              placeholder="e.g. 9817400078"
               value={customerPhone}
               onChange={(e) => setCustomerPhone(e.target.value)}
               required
@@ -406,7 +338,7 @@ export const PublicCheckout = () => {
           </div>
         </div>
 
-        {/* Dining & Service Option */}
+        {/* Dining Option (Dine-in vs Takeaway) */}
         <div
           className="card"
           style={{
@@ -417,84 +349,76 @@ export const PublicCheckout = () => {
           }}
         >
           <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.75rem' }}>
-            Service Preference
+            Dining Option
           </h3>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
-            {/* Dine-in Option */}
-            <div
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1rem' }}>
+            <button
+              type="button"
               onClick={() => setOrderType('DINE_IN')}
               style={{
-                padding: '0.85rem 1rem',
-                borderRadius: '12px',
-                border: orderType === 'DINE_IN' ? '2px solid #F59E0B' : '1px solid #E2E8F0',
-                background: orderType === 'DINE_IN' ? '#FEF3C7' : '#FAFAFB',
-                cursor: 'pointer',
-                transition: 'all 0.15s ease',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '0.65rem',
+                justifyContent: 'center',
+                gap: '0.5rem',
+                padding: '0.75rem',
+                borderRadius: '12px',
+                border: orderType === 'DINE_IN' ? '2px solid #00B89C' : '1px solid #CBD5E1',
+                background: orderType === 'DINE_IN' ? '#ECFDF5' : '#FFFFFF',
+                color: orderType === 'DINE_IN' ? '#00B89C' : '#64748B',
+                fontWeight: 700,
+                cursor: 'pointer',
               }}
             >
-              <Utensils size={20} color={orderType === 'DINE_IN' ? '#D97706' : '#64748B'} />
-              <div>
-                <strong style={{ fontSize: '0.9rem', color: '#1A2B49', display: 'block' }}>Dine-in</strong>
-                <span style={{ fontSize: '0.75rem', color: '#64748B' }}>Table Service</span>
-              </div>
-            </div>
-
-            {/* Takeaway Option */}
-            <div
+              <Utensils size={18} />
+              Dine-In
+            </button>
+            <button
+              type="button"
               onClick={() => setOrderType('TAKEAWAY')}
               style={{
-                padding: '0.85rem 1rem',
-                borderRadius: '12px',
-                border: orderType === 'TAKEAWAY' ? '2px solid #F59E0B' : '1px solid #E2E8F0',
-                background: orderType === 'TAKEAWAY' ? '#FEF3C7' : '#FAFAFB',
-                cursor: 'pointer',
-                transition: 'all 0.15s ease',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '0.65rem',
+                justifyContent: 'center',
+                gap: '0.5rem',
+                padding: '0.75rem',
+                borderRadius: '12px',
+                border: orderType === 'TAKEAWAY' ? '2px solid #00B89C' : '1px solid #CBD5E1',
+                background: orderType === 'TAKEAWAY' ? '#ECFDF5' : '#FFFFFF',
+                color: orderType === 'TAKEAWAY' ? '#00B89C' : '#64748B',
+                fontWeight: 700,
+                cursor: 'pointer',
               }}
             >
-              <Package size={20} color={orderType === 'TAKEAWAY' ? '#D97706' : '#64748B'} />
-              <div>
-                <strong style={{ fontSize: '0.9rem', color: '#1A2B49', display: 'block' }}>Takeaway</strong>
-                <span style={{ fontSize: '0.75rem', color: '#64748B' }}>Counter Pickup</span>
-              </div>
-            </div>
+              <Package size={18} />
+              Takeaway / Pickup
+            </button>
           </div>
 
-          {/* If Dine-in: Ask for Table Number */}
           {orderType === 'DINE_IN' && (
-            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '12px', padding: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '0.825rem', fontWeight: 600, color: '#1A2B49', marginBottom: '0.35rem' }}>
-                Select Table Number <span style={{ color: '#DC2626' }}>*</span>
+            <div>
+              <label style={{ fontSize: '0.8rem', fontWeight: 600, color: '#334155', display: 'block', marginBottom: '6px' }}>
+                Select Table / Enter Table Marker
               </label>
               {tables.length > 0 ? (
                 <select
                   value={selectedTableId}
                   onChange={(e) => {
                     setSelectedTableId(e.target.value);
-                    const t = tables.find(x => x.id === e.target.value);
-                    setSelectedTableNumber(t?.table_number || '');
+                    const t = tables.find((item) => item.id === e.target.value);
+                    if (t) setSelectedTableNumber(t.table_number);
                   }}
                   style={{
                     width: '100%',
-                    padding: '0.65rem 0.85rem',
-                    borderRadius: '8px',
+                    padding: '0.65rem 0.75rem',
+                    borderRadius: '10px',
                     border: '1px solid #CBD5E1',
+                    fontSize: '0.9rem',
                     background: '#FFFFFF',
-                    fontSize: '0.875rem',
-                    color: '#1A2B49',
                   }}
-                  required
                 >
-                  <option value="">-- Choose your table --</option>
-                  {tables.map(t => (
+                  {tables.map((t) => (
                     <option key={t.id} value={t.id}>
-                      {t.table_number} (Capacity: {t.capacity} • {t.location || 'Dining Floor'})
+                      Table {t.table_number} ({t.seating_capacity} Seats) - {t.section || 'Main Area'}
                     </option>
                   ))}
                 </select>
@@ -595,12 +519,12 @@ export const PublicCheckout = () => {
               }}
             >
               <span>Total Payable:</span>
-              <span style={{ color: '#F59E0B' }}>₹{grandTotal}</span>
+              <span style={{ color: '#059669' }}>₹{grandTotal}</span>
             </div>
           </div>
         </div>
 
-        {/* Payment Method Selection */}
+        {/* Business-Specific Payment Method Selection */}
         <div
           className="card"
           style={{
@@ -610,228 +534,286 @@ export const PublicCheckout = () => {
             padding: '1.25rem',
           }}
         >
-          <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.75rem' }}>
-            Choose Payment Method
-          </h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', margin: 0 }}>
+              Payment Method
+            </h3>
+            <span style={{ fontSize: '0.75rem', color: '#64748B' }}>Direct Merchant Settlement</span>
+          </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {/* Razorpay Option (Primary) - Full width premium card */}
-            <div
-              onClick={() => setPaymentMethod('RAZORPAY')}
-              style={{
-                padding: '1.25rem',
-                borderRadius: '14px',
-                border: paymentMethod === 'RAZORPAY' ? '2.5px solid #00B89C' : '1.5px solid #E2E8F0',
-                background: paymentMethod === 'RAZORPAY' 
-                  ? 'linear-gradient(135deg, #ECFDF5 0%, #F0FDF4 100%)' 
-                  : '#FAFAFB',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '0.75rem',
-                boxShadow: paymentMethod === 'RAZORPAY' 
-                  ? '0 4px 14px rgba(0, 184, 156, 0.12)' 
-                  : '0 1px 3px rgba(0, 0, 0, 0.04)',
-                position: 'relative',
-                overflow: 'hidden',
-              }}
-            >
-              {/* Selected indicator */}
-              {paymentMethod === 'RAZORPAY' && (
-                <div style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  height: '3px',
-                  background: 'linear-gradient(90deg, #00B89C, #00D4A3)',
-                }} />
-              )}
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                {/* Razorpay Logo/Icon Area */}
-                <div style={{
-                  width: '56px',
-                  height: '56px',
+            {/* Option 1: Direct Store UPI */}
+            {upiConfig?.upi_id ? (
+              <div
+                onClick={() => setPaymentMethod('UPI')}
+                style={{
+                  padding: '1.25rem',
                   borderRadius: '14px',
-                  background: paymentMethod === 'RAZORPAY' 
-                    ? 'linear-gradient(135deg, #00B89C, #00D4A3)' 
-                    : '#F1F5F9',
+                  border: paymentMethod === 'UPI' ? '2.5px solid #059669' : '1.5px solid #E2E8F0',
+                  background: paymentMethod === 'UPI' ? '#F0FDF4' : '#FAFAFB',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
                   display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  boxShadow: paymentMethod === 'RAZORPAY' 
-                    ? '0 4px 12px rgba(0, 184, 156, 0.3)' 
-                    : 'none',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-                    <Smartphone size={22} color={paymentMethod === 'RAZORPAY' ? '#FFFFFF' : '#64748B'} />
-                    <Lock size={16} color={paymentMethod === 'RAZORPAY' ? '#FFFFFF' : '#64748B'} />
+                  flexDirection: 'column',
+                  gap: '0.85rem',
+                  boxShadow: paymentMethod === 'UPI' ? '0 4px 14px rgba(5, 150, 105, 0.12)' : 'none',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                  <div
+                    style={{
+                      width: '48px',
+                      height: '48px',
+                      borderRadius: '12px',
+                      background: paymentMethod === 'UPI' ? '#059669' : '#E2E8F0',
+                      color: paymentMethod === 'UPI' ? '#FFFFFF' : '#64748B',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <QrCode size={24} />
+                  </div>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <strong style={{ fontSize: '1rem', color: '#1A2B49' }}>
+                        Pay via UPI
+                      </strong>
+                      <span
+                        style={{
+                          fontSize: '0.65rem',
+                          fontWeight: 700,
+                          color: '#059669',
+                          background: '#DCFCE7',
+                          padding: '0.15rem 0.45rem',
+                          borderRadius: '999px',
+                        }}
+                      >
+                        DIRECT TO STORE
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: '#475569', marginTop: '2px' }}>
+                      Payee: <strong>{upiConfig.upi_name || business?.name}</strong>
+                    </div>
+                    <div style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: '#0F172A', marginTop: '1px' }}>
+                      UPI ID: <strong>{upiConfig.upi_id}</strong>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      width: '22px',
+                      height: '22px',
+                      borderRadius: '50%',
+                      border: paymentMethod === 'UPI' ? '2.5px solid #059669' : '2px solid #CBD5E1',
+                      background: paymentMethod === 'UPI' ? '#059669' : 'transparent',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {paymentMethod === 'UPI' && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
                   </div>
                 </div>
 
-                {/* Payment Info */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-                    <strong style={{ 
-                      fontSize: '1.05rem', 
-                      color: '#1A2B49',
-                      fontWeight: 700,
-                    }}>
-                      Pay Securely with Razorpay
-                    </strong>
-                    <span style={{
-                      fontSize: '0.65rem',
-                      fontWeight: 700,
-                      color: '#00B89C',
-                      background: paymentMethod === 'RAZORPAY' ? '#D1FAE5' : '#F1F5F9',
-                      padding: '0.2rem 0.55rem',
-                      borderRadius: '999px',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.04em',
-                    }}>
-                      Test Mode
-                    </span>
-                    <span style={{
-                      fontSize: '0.65rem',
-                      fontWeight: 600,
-                      color: '#16A34A',
-                      background: '#DCFCE7',
-                      padding: '0.2rem 0.55rem',
-                      borderRadius: '999px',
-                    }}>
-                      <ShieldCheck size={10} style={{ marginRight: '2px', display: 'inline-block', verticalAlign: 'middle' }} />
-                      Secure
-                    </span>
+                {/* Embedded Interactive QR & Direct App Link when UPI selected */}
+                {paymentMethod === 'UPI' && (
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      marginTop: '0.5rem',
+                      padding: '1.25rem',
+                      background: '#FFFFFF',
+                      borderRadius: '12px',
+                      border: '1px solid #BBF7D0',
+                      textAlign: 'center',
+                    }}
+                  >
+                    <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#059669', marginBottom: '0.75rem' }}>
+                      SCAN WITH ANY UPI APP OR TAP TO PAY
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'inline-block',
+                        padding: '12px',
+                        background: '#FFFFFF',
+                        borderRadius: '12px',
+                        border: '2px solid #E2E8F0',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.04)',
+                        marginBottom: '0.85rem',
+                      }}
+                    >
+                      <QRCodeSVG value={storeUpiUri} size={180} level="M" />
+                    </div>
+
+                    {/* Copy UPI Button & Details */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '0.65rem 0.85rem',
+                        background: '#F8FAFC',
+                        borderRadius: '8px',
+                        border: '1px solid #E2E8F0',
+                        marginBottom: '0.75rem',
+                        fontSize: '0.8rem',
+                      }}
+                    >
+                      <div style={{ textAlign: 'left' }}>
+                        <div style={{ fontSize: '0.7rem', color: '#64748B' }}>Store UPI ID</div>
+                        <strong style={{ fontFamily: 'var(--font-mono)', color: '#1A2B49' }}>{upiConfig.upi_id}</strong>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        icon={copiedUpi ? CheckCircle2 : Copy}
+                        onClick={handleCopyUpi}
+                      >
+                        {copiedUpi ? 'Copied' : 'Copy ID'}
+                      </Button>
+                    </div>
+
+                    {/* Deep-link button to open installed UPI App */}
+                    <a
+                      href={storeUpiUri}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.5rem',
+                        padding: '0.75rem',
+                        borderRadius: '10px',
+                        background: '#059669',
+                        color: '#FFFFFF',
+                        fontWeight: 700,
+                        textDecoration: 'none',
+                        fontSize: '0.9rem',
+                        marginBottom: '0.5rem',
+                      }}
+                    >
+                      <Smartphone size={18} />
+                      Open in UPI App (GPay / PhonePe / Paytm)
+                    </a>
+
+                    <div style={{ padding: '0.5rem', background: '#FEF3C7', borderRadius: '8px', border: '1px solid #FDE68A', fontSize: '0.73rem', color: '#92400E', textAlign: 'left' }}>
+                      ℹ️ Transfer ₹{grandTotal} directly to {upiConfig.upi_name || business?.name}. Your order will be placed with <strong>Pending Verification</strong> status until verified by the store.
+                    </div>
                   </div>
-                  <p style={{ 
-                    fontSize: '0.8rem', 
-                    color: '#64748B', 
-                    margin: '0.25rem 0 0',
-                    lineHeight: 1.4,
-                  }}>
-                    Cards, UPI, Netbanking, Wallets & EMI
+                )}
+              </div>
+            ) : (
+              /* When Store Has Not Configured UPI */
+              <div
+                style={{
+                  padding: '1rem',
+                  borderRadius: '14px',
+                  border: '1.5px dashed #FCA5A5',
+                  background: '#FEF2F2',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '0.75rem',
+                  color: '#991B1B',
+                  fontSize: '0.85rem',
+                }}
+              >
+                <AlertCircle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
+                <div>
+                  <strong style={{ display: 'block', fontSize: '0.9rem' }}>
+                    This business has not configured UPI payments yet.
+                  </strong>
+                  <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: '#7F1D1D' }}>
+                    Direct store UPI transfer is unavailable. Please select "Pay Cash at Counter" to complete your order.
                   </p>
                 </div>
-
-                {/* Selection indicator */}
-                <div style={{
-                  width: '24px',
-                  height: '24px',
-                  borderRadius: '50%',
-                  border: paymentMethod === 'RAZORPAY' ? '2.5px solid #00B89C' : '2px solid #CBD5E1',
-                  background: paymentMethod === 'RAZORPAY' ? '#00B89C' : 'transparent',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  transition: 'all 0.2s ease',
-                }}>
-                  {paymentMethod === 'RAZORPAY' && (
-                    <Check size={14} color="#FFFFFF" strokeWidth={3} />
-                  )}
-                </div>
               </div>
+            )}
 
-              {/* Supported methods row */}
-              <div style={{ 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: '0.6rem',
-                paddingTop: '0.25rem',
-                borderTop: paymentMethod === 'RAZORPAY' ? '1px solid rgba(0, 184, 156, 0.15)' : '1px solid #F1F5F9',
-                marginTop: '0.25rem',
-              }}>
-                <span style={{ fontSize: '0.7rem', color: '#94A3B8', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Accepted:
-                </span>
-                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                  <PaymentBadge icon={<CreditCard size={12} />} label="Visa" selected={paymentMethod === 'RAZORPAY'} />
-                  <PaymentBadge icon={<CreditCard size={12} />} label="Mastercard" selected={paymentMethod === 'RAZORPAY'} />
-                  <PaymentBadge icon={<Smartphone size={12} />} label="UPI" selected={paymentMethod === 'RAZORPAY'} />
-                  <PaymentBadge icon={<Globe size={12} />} label="Netbanking" selected={paymentMethod === 'RAZORPAY'} />
-                  <PaymentBadge icon={<Lock size={12} />} label="Wallets" selected={paymentMethod === 'RAZORPAY'} />
-                </div>
-              </div>
-            </div>
-
-            {/* Cash Option - Secondary */}
+            {/* Option 2: Pay Cash at Counter */}
             <div
               onClick={() => setPaymentMethod('CASH')}
               style={{
                 padding: '1.1rem',
                 borderRadius: '14px',
                 border: paymentMethod === 'CASH' ? '2.5px solid #F59E0B' : '1.5px solid #E2E8F0',
-                background: paymentMethod === 'CASH' 
-                  ? 'linear-gradient(135deg, #FEF3C7 0%, #FFFAEB 100%)' 
-                  : '#FAFAFB',
+                background: paymentMethod === 'CASH' ? '#FEF3C7' : '#FAFAFB',
                 cursor: 'pointer',
                 transition: 'all 0.2s ease',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '1rem',
-                boxShadow: paymentMethod === 'CASH' 
-                  ? '0 4px 14px rgba(245, 158, 11, 0.12)' 
-                  : '0 1px 3px rgba(0, 0, 0, 0.04)',
+                gap: '0.85rem',
+                boxShadow: paymentMethod === 'CASH' ? '0 4px 14px rgba(245, 158, 11, 0.12)' : 'none',
               }}
             >
-              <div style={{
-                width: '50px',
-                height: '50px',
-                borderRadius: '12px',
-                background: paymentMethod === 'CASH' ? '#F59E0B' : '#F1F5F9',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                boxShadow: paymentMethod === 'CASH' ? '0 3px 10px rgba(245, 158, 11, 0.3)' : 'none',
-              }}>
-                <Banknote size={22} color={paymentMethod === 'CASH' ? '#FFFFFF' : '#64748B'} />
+              <div
+                style={{
+                  width: '48px',
+                  height: '48px',
+                  borderRadius: '12px',
+                  background: paymentMethod === 'CASH' ? '#F59E0B' : '#E2E8F0',
+                  color: paymentMethod === 'CASH' ? '#FFFFFF' : '#64748B',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                <Banknote size={24} />
               </div>
 
               <div style={{ flex: 1, minWidth: 0 }}>
-                <strong style={{ fontSize: '1rem', color: '#1A2B49', fontWeight: 700, display: 'block' }}>
+                <strong style={{ fontSize: '1rem', color: '#1A2B49', display: 'block' }}>
                   Pay Cash at Counter
                 </strong>
-                <p style={{ fontSize: '0.8rem', color: '#64748B', margin: '0.15rem 0 0', lineHeight: 1.4 }}>
-                  Pay directly when you pick up or dine
+                <p style={{ fontSize: '0.8rem', color: '#64748B', margin: '2px 0 0' }}>
+                  Pay cash directly when you pick up or dine
                 </p>
               </div>
 
-              <div style={{
-                width: '24px',
-                height: '24px',
-                borderRadius: '50%',
-                border: paymentMethod === 'CASH' ? '2.5px solid #F59E0B' : '2px solid #CBD5E1',
-                background: paymentMethod === 'CASH' ? '#F59E0B' : 'transparent',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                transition: 'all 0.2s ease',
-              }}>
-                {paymentMethod === 'CASH' && (
-                  <Check size={14} color="#FFFFFF" strokeWidth={3} />
-                )}
+              <div
+                style={{
+                  width: '22px',
+                  height: '22px',
+                  borderRadius: '50%',
+                  border: paymentMethod === 'CASH' ? '2.5px solid #F59E0B' : '2px solid #CBD5E1',
+                  background: paymentMethod === 'CASH' ? '#F59E0B' : 'transparent',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                {paymentMethod === 'CASH' && <Check size={13} color="#FFFFFF" strokeWidth={3} />}
               </div>
             </div>
           </div>
         </div>
 
-        {/* Place Order & Pay Button */}
+        {/* Place Order Button */}
         <Button
           variant="primary"
           size="lg"
           block
-          loading={placing || razorpayLoading}
-          disabled={placing || razorpayLoading}
+          loading={placing}
+          disabled={placing || (paymentMethod === 'UPI' && !upiConfig?.upi_id)}
           onClick={handlePlaceOrder}
           icon={CheckCircle2}
-          style={{ padding: '0.95rem', fontSize: '1.05rem', fontWeight: 800 }}
+          style={{
+            padding: '1rem',
+            fontSize: '1.05rem',
+            fontWeight: 800,
+            background: paymentMethod === 'UPI' ? '#059669' : '#F59E0B',
+            borderColor: paymentMethod === 'UPI' ? '#059669' : '#F59E0B',
+          }}
         >
-          {paymentMethod === 'RAZORPAY' ? `Pay Securely with Razorpay — ₹${grandTotal}` : `Place Cash Order — ₹${grandTotal}`}
+          {paymentMethod === 'UPI'
+            ? `Place Order via Store UPI — ₹${grandTotal}`
+            : `Place Cash Order — ₹${grandTotal}`}
         </Button>
       </div>
     </div>

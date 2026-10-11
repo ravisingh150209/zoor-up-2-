@@ -125,35 +125,70 @@ def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, cu
     if not biz:
         raise HTTPException(status_code=404, detail="Store not found.")
 
-    vpa = (biz.get("upi_id") or "").strip()
+    vpa = (
+        (biz.get("metadata") or {}).get("upi_id") or
+        biz.get("upi_id") or
+        (biz.get("payment_settings") or {}).get("upi_id") or
+        biz.get("vpa") or
+        ""
+    ).strip()
     if not vpa:
         raise HTTPException(
             status_code=400,
-            detail="This store has not configured a UPI payment ID yet. Please contact the store or choose another payment method."
+            detail="This business has not configured UPI payments yet."
         )
 
-    biz_name = (biz.get("upi_name") or biz.get("name") or "Store").strip()
+    biz_name = (
+        (biz.get("metadata") or {}).get("upi_name") or
+        biz.get("upi_name") or
+        biz.get("name") or
+        "Store"
+    ).strip()
     order_ref = order.get("order_id") or order.get("id") or req.order_id
     note = req.notes or f"Payment for Order {order_ref}"
 
     upi_uri = _generate_upi_uri(vpa, biz_name, amount, note, order_ref)
+
+    payments_col = get_collection("payments")
+
+    # Prevent duplicate payment records for the same order and business
+    existing_payment = payments_col.find_one({
+        "order_id": order.get("id") or req.order_id,
+        "business_id": business_id,
+        "status": "pending",
+    })
+    if existing_payment:
+        return {
+            "success": True,
+            "payment_id": existing_payment.get("payment_id") or existing_payment.get("id"),
+            "amount": float(existing_payment.get("amount", amount)),
+            "currency": "INR",
+            "upi_id": existing_payment.get("upi_id") or vpa,
+            "upi_name": biz_name,
+            "upi_uri": existing_payment.get("upi_uri") or upi_uri,
+            "status": "pending",
+        }
 
     payment_record = {
         "id": payment_id,
         "payment_id": payment_id,
         "business_id": business_id,
         "customer_id": customer_id or order.get("customer_id"),
+        "customer_name": order.get("customer_name") or "Customer",
+        "customer_phone": order.get("customer_phone") or "",
         "order_id": order.get("id") or req.order_id,
         "amount": amount,
         "currency": "INR",
         "upi_id": vpa,
         "status": "pending",
         "transaction_reference": payment_id,
+        "payment_method": "UPI",
+        "mode": "UPI",
         "upi_uri": upi_uri,
         "created_at": now_iso,
         "updated_at": now_iso
     }
-    db_instance.payments.insert_one(payment_record)
+    payments_col.insert_one(payment_record)
 
     return {
         "success": True,
@@ -161,8 +196,95 @@ def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, cu
         "amount": amount,
         "currency": "INR",
         "upi_id": vpa,
+        "upi_name": biz_name,
         "upi_uri": upi_uri,
         "status": "pending"
+    }
+
+
+class BusinessPaymentConfirmRequest(BaseModel):
+    order_id: str
+    payment_id: Optional[str] = None
+    reference_number: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.post("/business/confirm")
+def confirm_business_payment(
+    req: BusinessPaymentConfirmRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Authoritative business owner or staff payment confirmation.
+    Reconciles direct in-store UPI or Cash payment after verifying receipt in bank account.
+    """
+    role = (current_user.get("role") or "").upper()
+    if role not in (ROLE_BUSINESS_OWNER, ROLE_STAFF, ROLE_SUPER_ADMIN):
+        raise HTTPException(status_code=403, detail="Business owner or staff access required.")
+
+    biz = get_collection("businesses").find_one({"owner_id": current_user["id"]})
+    if not biz and current_user.get("business_id"):
+        biz = get_collection("businesses").find_one({"id": current_user["business_id"]})
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found.")
+
+    biz_id = biz["id"]
+    orders_col = get_collection("orders")
+    order = orders_col.find_one({"id": req.order_id, "business_id": biz_id})
+    if not order:
+        order = orders_col.find_one({"order_id": req.order_id, "business_id": biz_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found for this store.")
+
+    now_iso = datetime.utcnow().isoformat() + "Z"
+
+    # Update order payment_status to PAID
+    orders_col.update_one(
+        {"id": order["id"]},
+        {"$set": {
+            "payment_status": "PAID",
+            "updated_at": now_iso
+        }}
+    )
+
+    # Update payment record
+    payments_col = get_collection("payments")
+    p_filter = {"order_id": order["id"], "business_id": biz_id}
+    if req.payment_id:
+        p_filter["payment_id"] = req.payment_id
+
+    payment = payments_col.find_one(p_filter)
+    if payment:
+        payments_col.update_one(
+            {"id": payment["id"]},
+            {"$set": {
+                "status": "paid",
+                "verified": True,
+                "reconciled_by": current_user["id"],
+                "reconciled_at": now_iso,
+                "bank_reference": req.reference_number,
+                "reconciliation_notes": req.notes,
+                "updated_at": now_iso
+            }}
+        )
+
+    # Update invoice if present
+    invoices_col = get_collection("invoices")
+    invoices_col.update_one(
+        {"order_id": order["id"], "business_id": biz_id},
+        {"$set": {
+            "payment_status": "PAID",
+            "status": "paid",
+            "updated_at": now_iso
+        }}
+    )
+
+    return {
+        "success": True,
+        "message": f"Payment for Order {order['id']} successfully confirmed and marked as PAID.",
+        "order_id": order["id"],
+        "payment_status": "PAID",
+        "verified": True
     }
 
 @router.get("/business")

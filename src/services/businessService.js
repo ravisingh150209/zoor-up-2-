@@ -290,6 +290,26 @@ export const businessService = {
     }
   },
 
+  getPublicBusinessUpi: async (businessId) => {
+    try {
+      if (!businessId) return { upi_id: '', upi_name: '', upi_enabled: false };
+      const resp = await fetch(`${API_BASE}/api/public/business/${encodeURIComponent(businessId)}/upi`, {
+        headers: {
+          'Accept': 'application/json',
+          ...authStorage.getAuthHeaders(),
+        },
+      });
+      if (!resp.ok) {
+        if (resp.status === 404) return { upi_id: '', upi_name: '', upi_enabled: false };
+        throw new Error('Failed to load store UPI settings');
+      }
+      return await resp.json();
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      return { upi_id: '', upi_name: '', upi_enabled: false };
+    }
+  },
+
   updateBusinessUpi: async (businessId, upiData) => {
     try {
       const resp = await fetch(`${API_BASE}/api/business/upi`, {
