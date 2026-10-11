@@ -338,7 +338,7 @@ class SupabaseCollection:
             if "business_id" not in doc:
                 doc["business_id"] = str(doc["store_id"])
             del doc["store_id"]
-        if self.table_name in ("invoices", "orders", "payments") and "customer_id" in doc and not _is_valid_uuid(doc["customer_id"]):
+        if self.table_name in ("invoices", "orders", "payments") and doc.get("customer_id") and not _is_valid_uuid(doc["customer_id"]):
             raw_cid = str(doc["customer_id"])
             doc["customer_code"] = raw_cid
             if "metadata" not in doc or not isinstance(doc["metadata"], dict):
@@ -353,7 +353,7 @@ class SupabaseCollection:
             except Exception:
                 del doc["customer_id"]
 
-        if self.table_name in ("invoices", "orders", "payments") and "order_id" in doc and not _is_valid_uuid(doc["order_id"]):
+        if self.table_name in ("invoices", "orders", "payments") and doc.get("order_id") and not _is_valid_uuid(doc["order_id"]):
             raw_oid = str(doc["order_id"])
             if "metadata" not in doc or not isinstance(doc["metadata"], dict):
                 doc["metadata"] = {}

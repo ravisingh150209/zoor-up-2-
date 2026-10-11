@@ -412,20 +412,78 @@ def process_razorpay_webhook_event(event_payload: Dict[str, Any]) -> Dict[str, A
                         }
                     }
                 )
-                orders_col = get_collection("orders")
-                orders_col.update_one(
-                    {"id": payment.get("order_id")},
-                    {"$set": {"payment_status": "PAID", "payment_method": "RAZORPAY", "updated_at": now_iso}}
+                
+                # Check if this is a business subscription payment
+                is_sub = (
+                    payment.get("payment_type") == "BUSINESS_SUBSCRIPTION"
+                    or payment.get("plan_id") is not None
+                    or payment.get("order_id") is None
                 )
-                try:
-                    record_commission_for_payment(
-                        payment_id=payment.get("payment_id"),
-                        order_id=payment.get("order_id"),
-                        business_id=payment.get("business_id"),
-                        amount=float(payment.get("amount") or 0.0)
+                
+                if is_sub:
+                    biz_id = payment.get("business_id")
+                    target_plan = (payment.get("plan_id") or "GROWTH").upper()
+                    interval = (payment.get("billing_interval") or "monthly").lower()
+                    from datetime import timedelta
+                    duration_days = 365 if interval == "annual" else 30
+                    ends_at = datetime.now(timezone.utc) + timedelta(days=duration_days)
+                    ends_at_iso = ends_at.isoformat().replace("+00:00", "Z")
+                    
+                    if biz_id:
+                        biz_col = get_collection("businesses")
+                        biz_col.update_one(
+                            {"id": biz_id},
+                            {"$set": {
+                                "subscription_plan": target_plan,
+                                "subscription_status": "ACTIVE",
+                                "payment_status": "PAID",
+                                "trial_status": "COMPLETED",
+                                "subscription_started_at": now_iso,
+                                "subscription_ends_at": ends_at_iso,
+                                "current_period_end": ends_at_iso,
+                                "updated_at": now_iso,
+                            }}
+                        )
+                        subs_col = get_collection("subscriptions")
+                        subs_col.update_one(
+                            {"business_id": biz_id},
+                            {"$set": {
+                                "plan_id": target_plan,
+                                "plan": target_plan,
+                                "status": "active",
+                                "subscription_status": "ACTIVE",
+                                "payment_status": "PAID",
+                                "current_period_start": now_iso,
+                                "current_period_end": ends_at_iso,
+                                "subscription_started_at": now_iso,
+                                "subscription_ends_at": ends_at_iso,
+                                "billing_interval": interval,
+                                "amount": float(payment.get("amount") or 0.0),
+                                "currency": "INR",
+                                "provider": "RAZORPAY",
+                                "last_payment_id": payment.get("payment_id"),
+                                "updated_at": now_iso,
+                            }},
+                            upsert=True
+                        )
+                    return {"status": "processed", "action": "subscription_activated", "business_id": biz_id, "plan": target_plan}
+                
+                # Customer order payment (order_id exists)
+                if payment.get("order_id"):
+                    orders_col = get_collection("orders")
+                    orders_col.update_one(
+                        {"id": payment.get("order_id")},
+                        {"$set": {"payment_status": "PAID", "payment_method": "RAZORPAY", "updated_at": now_iso}}
                     )
-                except Exception:
-                    pass
+                    try:
+                        record_commission_for_payment(
+                            payment_id=payment.get("payment_id"),
+                            order_id=payment.get("order_id"),
+                            business_id=payment.get("business_id"),
+                            amount=float(payment.get("amount") or 0.0)
+                        )
+                    except Exception:
+                        pass
                 return {"status": "processed", "action": "marked_paid", "order_id": payment.get("order_id")}
     
     elif event_type == "payment.failed":
@@ -450,3 +508,288 @@ def get_razorpay_payment_by_payment_id(razorpay_payment_id: str) -> Optional[Dic
     """Get payment record by Razorpay payment ID."""
     payments_col = get_collection("payments")
     return payments_col.find_one({"razorpay_payment_id": razorpay_payment_id})
+
+
+# =============================================================================
+# BUSINESS SUBSCRIPTION RAZORPAY INTEGRATION
+# Reuses EXACT SAME Razorpay merchant account, credentials, and infrastructure
+# =============================================================================
+
+SUBSCRIPTION_PLAN_PRICING: Dict[str, Dict[str, float]] = {
+    "FREE": {"monthly": 0.0, "annual": 0.0},
+    "STARTER": {"monthly": 299.0, "annual": 2990.0},
+    "GROWTH": {"monthly": 799.0, "annual": 7990.0},
+    "PRO": {"monthly": 1499.0, "annual": 14990.0},
+    "PREMIUM": {"monthly": 2499.0, "annual": 24990.0},
+}
+
+
+def create_razorpay_order_for_subscription(
+    business_id: str,
+    plan_id: str,
+    billing_interval: str = "monthly",
+    user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Create a Razorpay order for a business subscription using the exact same
+    Razorpay merchant credentials and configuration as customer orders.
+    Guarantees strict separation:
+      - order_id is None (cannot create or touch customer orders)
+      - customer_id is None
+      - payment_type is 'BUSINESS_SUBSCRIPTION'
+    """
+    plan_key = plan_id.upper().strip()
+    if plan_key not in SUBSCRIPTION_PLAN_PRICING:
+        raise ValueError(f"Invalid subscription plan '{plan_id}'. Allowed plans: {list(SUBSCRIPTION_PLAN_PRICING.keys())}")
+    
+    interval = (billing_interval or "monthly").lower().strip()
+    if interval not in ("monthly", "annual"):
+        interval = "monthly"
+        
+    amount_inr = SUBSCRIPTION_PLAN_PRICING[plan_key][interval]
+    if amount_inr <= 0:
+        raise ValueError("Free plan requires no payment.")
+        
+    businesses_col = get_collection("businesses")
+    biz = businesses_col.find_one({"id": business_id})
+    if not biz:
+        raise ValueError("Business not found")
+        
+    client = get_razorpay_client()
+    amount_paise = int(round(amount_inr * 100))
+    if amount_paise < 100:
+        raise ValueError("Subscription amount must be at least ₹1.00")
+    
+    payments_col = get_collection("payments")
+    
+    # Idempotency check: reuse pending subscription payment for this exact business and plan if exists
+    existing_pending = payments_col.find_one({
+        "business_id": business_id,
+        "plan_id": plan_key.lower(),
+        "billing_interval": interval,
+        "status": "pending",
+        "payment_method": "RAZORPAY"
+    })
+    if existing_pending and existing_pending.get("razorpay_order_id"):
+        return {
+            "success": True,
+            "payment_id": existing_pending.get("payment_id"),
+            "razorpay_order_id": existing_pending.get("razorpay_order_id"),
+            "razorpay_key_id": existing_pending.get("razorpay_key_id") or RAZORPAY_KEY_ID,
+            "amount": existing_pending.get("amount"),
+            "currency": "INR",
+            "amount_paise": int(round(float(existing_pending.get("amount", amount_inr)) * 100)),
+            "status": "pending",
+            "mode": RAZORPAY_MODE,
+            "plan_id": plan_key.lower(),
+            "plan_name": plan_key.capitalize(),
+            "billing_interval": interval,
+            "business_id": business_id,
+            "business_name": biz.get("name") or "Business",
+        }
+        
+    receipt = f"sub_{business_id[:8]}_{secrets.token_hex(4)}"
+    notes = {
+        "type": "BUSINESS_SUBSCRIPTION",
+        "business_id": business_id,
+        "plan_id": plan_key.lower(),
+        "billing_interval": interval,
+        "mode": RAZORPAY_MODE,
+    }
+    if user_id:
+        notes["user_id"] = user_id
+        
+    try:
+        razorpay_order = client.order.create({
+            "amount": amount_paise,
+            "currency": "INR",
+            "receipt": receipt,
+            "notes": notes,
+            "partial_payment": False,
+        })
+    except Exception as e:
+        err_str = str(e)
+        if RAZORPAY_KEY_SECRET and RAZORPAY_KEY_SECRET in err_str:
+            err_str = err_str.replace(RAZORPAY_KEY_SECRET, "[REDACTED]")
+        raise RuntimeError(f"Razorpay subscription order creation failed: {err_str}")
+        
+    now_iso = _now_iso()
+    payment_id = f"pay_sub_{int(datetime.now(timezone.utc).timestamp())}_{secrets.token_hex(4)}"
+    
+    payment_record = {
+        "id": payment_id,
+        "payment_id": payment_id,
+        "business_id": business_id,
+        "customer_id": None,
+        "customer_name": f"{biz.get('name') or 'Business'} Subscription",
+        "order_id": None,
+        "payment_type": "BUSINESS_SUBSCRIPTION",
+        "plan_id": plan_key.lower(),
+        "plan_name": plan_key.capitalize(),
+        "billing_interval": interval,
+        "amount": amount_inr,
+        "currency": "INR",
+        "payment_method": "RAZORPAY",
+        "payment_mode": "ONLINE",
+        "razorpay_order_id": razorpay_order["id"],
+        "razorpay_key_id": RAZORPAY_KEY_ID,
+        "status": "pending",
+        "mode": RAZORPAY_MODE,
+        "notes": f"ZOOR UP {plan_key.capitalize()} Plan ({interval.capitalize()})",
+        "metadata": {
+            "type": "BUSINESS_SUBSCRIPTION",
+            "business_id": business_id,
+            "plan_id": plan_key.lower(),
+            "billing_interval": interval,
+            "user_id": user_id,
+        },
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    payments_col.insert_one(payment_record)
+    
+    return {
+        "success": True,
+        "payment_id": payment_id,
+        "razorpay_order_id": razorpay_order["id"],
+        "razorpay_key_id": RAZORPAY_KEY_ID,
+        "amount": amount_inr,
+        "currency": "INR",
+        "amount_paise": razorpay_order["amount"],
+        "status": "pending",
+        "mode": RAZORPAY_MODE,
+        "plan_id": plan_key.lower(),
+        "plan_name": plan_key.capitalize(),
+        "billing_interval": interval,
+        "business_id": business_id,
+        "business_name": biz.get("name") or "Business",
+    }
+
+
+def verify_razorpay_subscription_payment(
+    razorpay_order_id: str,
+    razorpay_payment_id: str,
+    razorpay_signature: str,
+    business_id: str,
+    plan_id: Optional[str] = None,
+    billing_interval: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Verify Razorpay payment signature for business subscription and activate the subscription plan.
+    Does NOT create or modify customer orders or customer order commissions.
+    Reuses existing verify_razorpay_signature cryptographic implementation.
+    """
+    if not verify_razorpay_signature(razorpay_order_id, razorpay_payment_id, razorpay_signature):
+        raise ValueError("Invalid payment signature")
+        
+    payments_col = get_collection("payments")
+    businesses_col = get_collection("businesses")
+    subs_col = get_collection("subscriptions")
+    
+    payment = payments_col.find_one({"razorpay_order_id": razorpay_order_id})
+    if not payment:
+        raise ValueError("Payment record not found")
+        
+    if payment.get("business_id") != business_id:
+        raise ValueError("Business ID mismatch for this payment")
+        
+    # Idempotency check: if already verified as paid with this payment ID, return success safely
+    if payment.get("status") == "paid" and payment.get("razorpay_payment_id") == razorpay_payment_id:
+        return {
+            "success": True,
+            "message": "Subscription payment already verified",
+            "payment_id": payment.get("payment_id"),
+            "business_id": business_id,
+            "plan_id": (payment.get("plan_id") or plan_id or "GROWTH").upper(),
+            "status": "paid",
+            "subscription_status": "ACTIVE",
+            "razorpay_key_id": payment.get("razorpay_key_id") or RAZORPAY_KEY_ID,
+        }
+        
+    if payment.get("razorpay_payment_id") and payment.get("razorpay_payment_id") != razorpay_payment_id:
+        raise ValueError("Payment ID mismatch for this order")
+        
+    now_dt = datetime.now(timezone.utc)
+    now_iso = _now_iso()
+    target_plan = (plan_id or payment.get("plan_id") or "GROWTH").upper()
+    interval = (billing_interval or payment.get("billing_interval") or "monthly").lower()
+    
+    from datetime import timedelta
+    duration_days = 365 if interval == "annual" else 30
+    ends_at = now_dt + timedelta(days=duration_days)
+    ends_at_iso = ends_at.isoformat().replace("+00:00", "Z")
+    
+    update_data = {
+        "razorpay_payment_id": razorpay_payment_id,
+        "razorpay_signature": razorpay_signature,
+        "status": "paid",
+        "verified": True,
+        "verified_at": now_iso,
+        "updated_at": now_iso,
+    }
+    payments_col.update_one(
+        {"razorpay_order_id": razorpay_order_id},
+        {"$set": update_data}
+    )
+    
+    # Authoritatively activate business subscription
+    biz_update = {
+        "subscription_plan": target_plan,
+        "subscription_status": "ACTIVE",
+        "payment_status": "PAID",
+        "trial_status": "COMPLETED",
+        "subscription_started_at": now_iso,
+        "subscription_ends_at": ends_at_iso,
+        "current_period_end": ends_at_iso,
+        "updated_at": now_iso,
+    }
+    businesses_col.update_one(
+        {"id": business_id},
+        {"$set": biz_update}
+    )
+    
+    # Upsert authoritative subscription record in subscriptions table
+    sub_record = {
+        "id": f"sub_rec_{business_id}_{secrets.token_hex(4)}",
+        "business_id": business_id,
+        "store_id": business_id,
+        "plan_id": target_plan,
+        "plan": target_plan,
+        "status": "active",
+        "subscription_status": "ACTIVE",
+        "trial_status": "NOT_APPLICABLE",
+        "payment_status": "PAID",
+        "current_period_start": now_iso,
+        "current_period_end": ends_at_iso,
+        "subscription_started_at": now_iso,
+        "subscription_ends_at": ends_at_iso,
+        "billing_interval": interval,
+        "amount": float(payment.get("amount") or 0.0),
+        "currency": "INR",
+        "provider": "RAZORPAY",
+        "last_payment_id": payment.get("payment_id"),
+        "razorpay_subscription_id": None,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    subs_col.update_one(
+        {"business_id": business_id},
+        {"$set": sub_record},
+        upsert=True
+    )
+    
+    return {
+        "success": True,
+        "message": f"Successfully activated {target_plan} subscription plan",
+        "payment_id": payment.get("payment_id"),
+        "business_id": business_id,
+        "plan_id": target_plan,
+        "billing_interval": interval,
+        "status": "paid",
+        "subscription_status": "ACTIVE",
+        "current_period_end": ends_at_iso,
+        "razorpay_key_id": payment.get("razorpay_key_id") or RAZORPAY_KEY_ID,
+        "razorpay_order_id": razorpay_order_id,
+        "razorpay_payment_id": razorpay_payment_id,
+    }

@@ -10,8 +10,10 @@ import {
   Shield,
   Star,
   Loader2,
+  Lock,
 } from 'lucide-react';
 import { businessService } from '../../services/businessService';
+import { paymentService } from '../../services/paymentService';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { Button } from '../../components/ui/Button';
@@ -24,6 +26,7 @@ const PLANS = [
     id: 'FREE',
     name: 'Free',
     price: 0,
+    annualPrice: 0,
     interval: 'monthly',
     features: [
       'Basic POS & Billing',
@@ -39,6 +42,7 @@ const PLANS = [
     id: 'STARTER',
     name: 'Starter',
     price: 299,
+    annualPrice: 2990,
     interval: 'monthly',
     features: [
       'Everything in Free',
@@ -55,6 +59,7 @@ const PLANS = [
     id: 'GROWTH',
     name: 'Growth',
     price: 799,
+    annualPrice: 7990,
     interval: 'monthly',
     features: [
       'Everything in Starter',
@@ -72,6 +77,7 @@ const PLANS = [
     id: 'PRO',
     name: 'Pro',
     price: 1499,
+    annualPrice: 14990,
     interval: 'monthly',
     features: [
       'Everything in Growth',
@@ -89,6 +95,7 @@ const PLANS = [
     id: 'PREMIUM',
     name: 'Premium',
     price: 2499,
+    annualPrice: 24990,
     interval: 'monthly',
     features: [
       'Everything in Pro',
@@ -103,6 +110,21 @@ const PLANS = [
     popular: false,
   },
 ];
+
+// Dynamically load Razorpay SDK
+const loadRazorpayScript = () => {
+  return new Promise((resolve, reject) => {
+    if (window.Razorpay) {
+      resolve(true);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve(true);
+    script.onerror = () => reject(new Error('Failed to load Razorpay checkout script. Please check your connection.'));
+    document.body.appendChild(script);
+  });
+};
 
 export const SubscriptionManagement = () => {
   const { user } = useAuth();
@@ -130,32 +152,144 @@ export const SubscriptionManagement = () => {
     }
   };
 
-  const handleUpgrade = async (planId) => {
+  // Trial activation (when eligible)
+  const handleTrialUpgrade = async (planId) => {
     if (!user?.business_id) return;
     setUpgrading(true);
     try {
       await businessService.updateSubscriptionTrial(user.business_id, {
         plan_id: planId,
       });
-      addToast(`Successfully upgraded to ${planId} plan!`, 'success');
-      loadSubscription();
+      addToast(`Successfully activated trial for ${planId} plan!`, 'success');
+      setSelectedPlan(null);
+      await loadSubscription();
     } catch (e) {
-      addToast(e.message || 'Failed to upgrade plan', 'error');
+      addToast(e.message || 'Failed to activate trial', 'error');
     } finally {
       setUpgrading(false);
     }
   };
 
-  const getStatusColor = (status) => {
+  // Razorpay payment for subscriptions
+  const handleRazorpayPayment = async (planId) => {
+    if (!user?.business_id) return;
+    setUpgrading(true);
+    try {
+      if (planId === 'FREE') {
+        await businessService.updateSubscriptionTrial(user.business_id, {
+          plan_id: 'FREE',
+        });
+        addToast('Switched to Free plan successfully.', 'success');
+        setSelectedPlan(null);
+        await loadSubscription();
+        return;
+      }
+
+      // 1. Create Razorpay order on backend (reusing existing Razorpay merchant account)
+      const rzpOrder = await paymentService.createSubscriptionRazorpayOrder({
+        plan_id: planId,
+        billing_interval: billingInterval,
+        business_id: user.business_id,
+      });
+
+      if (!rzpOrder?.razorpay_order_id || !rzpOrder?.razorpay_key_id) {
+        throw new Error(rzpOrder?.error || 'Failed to initialize Razorpay payment');
+      }
+
+      // 2. Load Razorpay Checkout SDK
+      await loadRazorpayScript();
+
+      // 3. Launch Checkout Modal
+      const options = {
+        key: rzpOrder.razorpay_key_id,
+        amount: rzpOrder.amount_paise,
+        currency: 'INR',
+        name: 'ZOOR UP',
+        description: `Subscription: ${rzpOrder.plan_name || planId} Plan (${billingInterval === 'annual' ? 'Annual' : 'Monthly'})`,
+        order_id: rzpOrder.razorpay_order_id,
+        prefill: {
+          name: user?.name || user?.business_name || '',
+          email: user?.email || '',
+          contact: user?.phone || '',
+        },
+        notes: {
+          type: 'BUSINESS_SUBSCRIPTION',
+          business_id: user.business_id,
+          plan_id: planId.toLowerCase(),
+          billing_interval: billingInterval,
+        },
+        theme: {
+          color: '#00B89C',
+        },
+        handler: async (response) => {
+          try {
+            setUpgrading(true);
+            const verifyRes = await paymentService.verifySubscriptionRazorpayPayment({
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+              plan_id: planId,
+              billing_interval: billingInterval,
+              business_id: user.business_id,
+            });
+
+            if (verifyRes?.success) {
+              addToast(`🎉 ${planId} Subscription Activated Successfully!`, 'success');
+              setSelectedPlan(null);
+              await loadSubscription();
+            } else {
+              throw new Error(verifyRes?.error || 'Subscription verification failed.');
+            }
+          } catch (verifyErr) {
+            console.error('Subscription verification error:', verifyErr);
+            addToast(verifyErr.message || 'Payment verification failed. Please contact support.', 'error');
+          } finally {
+            setUpgrading(false);
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            paymentService.recordSubscriptionRazorpayFailure({
+              razorpay_order_id: rzpOrder.razorpay_order_id,
+              error_code: 'MODAL_DISMISSED',
+              error_description: 'User dismissed Razorpay checkout',
+            });
+            setUpgrading(false);
+            addToast('Subscription payment cancelled.', 'info');
+          },
+        },
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.on('payment.failed', (resp) => {
+        paymentService.recordSubscriptionRazorpayFailure({
+          razorpay_order_id: rzpOrder.razorpay_order_id,
+          error_code: resp?.error?.code,
+          error_description: resp?.error?.description,
+        });
+        setUpgrading(false);
+        addToast(resp?.error?.description || 'Subscription payment failed.', 'error');
+      });
+      rzp.open();
+    } catch (e) {
+      console.error('Subscription Razorpay error:', e);
+      addToast(e.message || 'Failed to start payment', 'error');
+      setUpgrading(false);
+    }
+  };
+
+  const getStatusColor = (status, paymentStatus) => {
+    if (paymentStatus === 'PAID') return '#10B981';
     switch (status) {
       case 'TRIAL': return '#F59E0B';
       case 'EXPIRED': return '#EF4444';
-      case 'ACTIVE': return '#22C55E';
+      case 'ACTIVE': return '#10B981';
       default: return '#64748B';
     }
   };
 
-  const getStatusLabel = (status) => {
+  const getStatusLabel = (status, paymentStatus) => {
+    if (paymentStatus === 'PAID') return 'Paid & Active';
     switch (status) {
       case 'TRIAL': return 'Trial Active';
       case 'EXPIRED': return 'Trial Expired';
@@ -170,8 +304,10 @@ export const SubscriptionManagement = () => {
 
   const plan = (subData?.plan || 'FREE').toUpperCase();
   const status = subData?.subscription_status || 'ACTIVE';
+  const paymentStatus = subData?.payment_status || 'FREE';
   const isFree = plan === 'FREE';
-  const isTrial = status === 'TRIAL';
+  const isPaid = paymentStatus === 'PAID';
+  const isTrial = status === 'TRIAL' && !isPaid;
   const isExpired = status === 'EXPIRED';
   const currentPlanData = PLANS.find(p => p.id === plan) || PLANS[0];
 
@@ -182,19 +318,21 @@ export const SubscriptionManagement = () => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
-              <h2 style={{ fontSize: '1.5rem', fontWeight: 800, margin: 0 }}>Current Plan</h2>
-              <Badge style={{ background: getStatusColor(status), color: '#FFFFFF', fontSize: '0.75rem' }}>
-                {getStatusLabel(status)}
+              <h2 style={{ fontSize: '1.5rem', fontWeight: 800, margin: 0 }}>Current Plan: {plan}</h2>
+              <Badge style={{ background: getStatusColor(status, paymentStatus), color: '#FFFFFF', fontSize: '0.75rem' }}>
+                {getStatusLabel(status, paymentStatus)}
               </Badge>
             </div>
             <p style={{ fontSize: '2.5rem', fontWeight: 800, margin: '0.5rem 0', lineHeight: 1.1 }}>
-              {isFree ? 'Free' : `₹${currentPlanData.price}/${billingInterval === 'annual' ? 'yr' : 'mo'}`}
+              {isFree ? 'Free' : `₹${billingInterval === 'annual' ? currentPlanData.annualPrice : currentPlanData.price}/${billingInterval === 'annual' ? 'yr' : 'mo'}`}
             </p>
             <p style={{ color: '#94A3B8', margin: 0 }}>
-              {isTrial && subData?.trial_days_remaining !== undefined
-                ? `⏳ ${subData.trial_days_remaining} days left in trial`
+              {isPaid
+                ? '✓ Active paid subscription (Powered by Razorpay)'
+                : isTrial && subData?.trial_days_remaining !== undefined
+                ? `⏳ ${subData.trial_days_remaining} days left in free trial`
                 : isExpired
-                ? '⚠️ Trial expired — upgrade to restore premium features'
+                ? '⚠️ Trial expired — subscribe to restore premium features'
                 : isFree
                 ? 'Standard Free Plan'
                 : '✓ Active subscription'}
@@ -203,11 +341,11 @@ export const SubscriptionManagement = () => {
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
             {!isFree && !isExpired && (
               <Button variant="outline" icon={ArrowRight} onClick={() => setSelectedPlan(plan)}>
-                Manage Plan
+                Change Plan
               </Button>
             )}
             {(isFree || isExpired) && (
-              <Button variant="primary" icon={Crown} onClick={() => setSelectedPlan('STARTER')}>
+              <Button variant="primary" icon={Crown} onClick={() => setSelectedPlan('GROWTH')}>
                 Upgrade Now
               </Button>
             )}
@@ -222,14 +360,14 @@ export const SubscriptionManagement = () => {
             </div>
           </div>
         )}
-        </Card>
+      </Card>
 
       {/* Plan Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
         {PLANS.map((p) => {
           const isCurrent = p.id === plan;
           const isUpgrade = PLANS.indexOf(p) > PLANS.indexOf(currentPlanData);
-          const annualPrice = Math.round(p.price * 12 * 0.833); // ~17% discount
+          const displayPrice = billingInterval === 'annual' ? p.annualPrice : p.price;
           return (
             <Card
               key={p.id}
@@ -247,9 +385,9 @@ export const SubscriptionManagement = () => {
                   MOST POPULAR
                 </div>
               )}
-              {isCurrent && !isFree && (
+              {isCurrent && (
                 <div style={{ position: 'absolute', top: 0, left: 0, background: '#F59E0B', color: '#1A2B49', padding: '0.25rem 0.75rem', borderRadius: '0 0 8px 0', fontSize: '0.7rem', fontWeight: 700 }}>
-                  CURRENT
+                  CURRENT PLAN
                 </div>
               )}
 
@@ -257,11 +395,11 @@ export const SubscriptionManagement = () => {
                 <div style={{ marginBottom: '1rem' }}>
                   <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>{p.name}</h3>
                   <p style={{ color: '#64748B', fontSize: '0.85rem', margin: '0.25rem 0 0' }}>
-                    {p.price === 0 ? 'Free forever' : `₹${p.price}/${billingInterval === 'annual' ? 'yr' : 'mo'}`}
+                    {p.price === 0 ? 'Free forever' : `₹${displayPrice}/${billingInterval === 'annual' ? 'yr' : 'mo'}`}
                   </p>
                   {p.price > 0 && billingInterval === 'annual' && (
-                    <p style={{ color: '#059669', fontSize: '0.8rem', margin: '0.25rem 0 0' }}>
-                      ₹{annualPrice}/yr (Save ~17%)
+                    <p style={{ color: '#059669', fontSize: '0.8rem', margin: '0.25rem 0 0', fontWeight: 600 }}>
+                      Save ~17% with Annual Billing
                     </p>
                   )}
                 </div>
@@ -291,12 +429,12 @@ export const SubscriptionManagement = () => {
                 <Button
                   variant={isCurrent ? 'outline' : isUpgrade ? 'primary' : 'secondary'}
                   fullWidth
-                  icon={ArrowRight}
+                  icon={p.price > 0 ? CreditCard : ArrowRight}
                   onClick={() => setSelectedPlan(p.id)}
-                  disabled={isCurrent}
+                  disabled={isCurrent && isPaid}
                   loading={upgrading && selectedPlan === p.id}
                 >
-                  {isCurrent ? 'Current Plan' : isUpgrade ? 'Upgrade' : 'Downgrade'}
+                  {isCurrent && isPaid ? 'Active Plan' : isCurrent ? 'Renew / Subscribe' : isUpgrade ? 'Upgrade with Razorpay' : 'Switch Plan'}
                 </Button>
               </div>
             </Card>
@@ -304,52 +442,109 @@ export const SubscriptionManagement = () => {
         })}
       </div>
 
-      {/* Upgrade Confirmation Modal */}
+      {/* Upgrade / Subscribe Modal */}
       {selectedPlan && (
-        <div className="modal-overlay" onClick={() => setSelectedPlan(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
+        <div className="modal-overlay" onClick={() => !upgrading && setSelectedPlan(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ background: '#FFFFFF', borderRadius: '16px', padding: '2rem', maxWidth: '480px', width: '100%', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
             <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
               <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: '#FEF3C7', color: '#D97706', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
                 <Crown size={28} />
               </div>
               <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>
-                {plan === 'FREE' ? 'Start Trial' : 'Change Plan'}
+                {selectedPlan === 'FREE' ? 'Switch to Free Plan' : `Subscribe to ${selectedPlan}`}
               </h3>
-              <p style={{ color: '#64748B', margin: '0.5rem 0 0' }}>
-                Switch to <strong>{selectedPlan}</strong> plan?
+              <p style={{ color: '#64748B', margin: '0.5rem 0 0', fontSize: '0.9rem' }}>
+                {selectedPlan === 'FREE'
+                  ? 'Switch to Free tier? Premium features will be paused.'
+                  : `Secure online payment powered by existing Razorpay merchant account.`}
               </p>
             </div>
-            <div style={{ background: '#F8FAFC', borderRadius: '12px', padding: '1rem', marginBottom: '1.5rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem' }}>
-                <span>Monthly</span>
-                <strong>₹{PLANS.find(p => p.id === selectedPlan)?.price || 0}/mo</strong>
+
+            {selectedPlan !== 'FREE' && (
+              <div style={{ background: '#F8FAFC', borderRadius: '12px', padding: '1rem', marginBottom: '1.5rem', border: '1px solid #E2E8F0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', marginBottom: '0.5rem' }}>
+                  <span style={{ color: '#64748B' }}>Selected Plan</span>
+                  <strong>{selectedPlan}</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', marginBottom: '0.5rem' }}>
+                  <span style={{ color: '#64748B' }}>Billing Cycle</span>
+                  <strong style={{ textTransform: 'capitalize' }}>{billingInterval}</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.1rem', fontWeight: 800, paddingTop: '0.5rem', borderTop: '1px solid #E2E8F0' }}>
+                  <span style={{ color: '#1A2B49' }}>Total Amount</span>
+                  <span style={{ color: '#00B89C' }}>
+                    ₹{billingInterval === 'annual'
+                      ? (PLANS.find(p => p.id === selectedPlan)?.annualPrice || 0)
+                      : (PLANS.find(p => p.id === selectedPlan)?.price || 0)}
+                  </span>
+                </div>
+                <div style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem', color: '#64748B' }}>
+                  <Lock size={14} color="#00B89C" />
+                  <span>256-bit SSL encrypted. Exact same Razorpay account as customer orders.</span>
+                </div>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', color: '#059669' }}>
-                <span>Annual (Save ~17%)</span>
-                <strong>₹{Math.round((PLANS.find(p => p.id === selectedPlan)?.price || 0) * 12 * 0.833)}/yr</strong>
-              </div>
-            </div>
+            )}
+
             <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <Button variant="secondary" fullWidth onClick={() => setSelectedPlan(null)}>
+              <Button variant="secondary" fullWidth onClick={() => setSelectedPlan(null)} disabled={upgrading}>
                 Cancel
               </Button>
-              <Button variant="primary" fullWidth onClick={() => handleUpgrade(selectedPlan)} loading={upgrading}>
-                Confirm & {plan === 'FREE' ? 'Start Trial' : 'Upgrade'}
+              <Button
+                variant="primary"
+                fullWidth
+                onClick={() => handleRazorpayPayment(selectedPlan)}
+                loading={upgrading}
+                icon={selectedPlan === 'FREE' ? ArrowRight : CreditCard}
+              >
+                {selectedPlan === 'FREE'
+                  ? 'Confirm Free Plan'
+                  : `Pay ₹${billingInterval === 'annual' ? (PLANS.find(p => p.id === selectedPlan)?.annualPrice || 0) : (PLANS.find(p => p.id === selectedPlan)?.price || 0)} via Razorpay`}
               </Button>
             </div>
+
+            {selectedPlan !== 'FREE' && !subData?.trial_used && (
+              <div style={{ marginTop: '1rem', textAlign: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => handleTrialUpgrade(selectedPlan)}
+                  disabled={upgrading}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#F59E0B',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                  }}
+                >
+                  Or start 30-Day Free Trial (No Card Required)
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* Billing Interval Toggle */}
-      <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', marginTop: '1rem', flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-          <input type="radio" checked={billingInterval === 'monthly'} onChange={() => setBillingInterval('monthly')} />
-          <span>Monthly</span>
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontWeight: billingInterval === 'monthly' ? 700 : 400 }}>
+          <input
+            type="radio"
+            name="billingInterval"
+            checked={billingInterval === 'monthly'}
+            onChange={() => setBillingInterval('monthly')}
+          />
+          <span>Monthly Billing</span>
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-          <input type="radio" checked={billingInterval === 'annual'} onChange={() => setBillingInterval('annual')} />
-          <span>Annual (Save ~17%)</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontWeight: billingInterval === 'annual' ? 700 : 400 }}>
+          <input
+            type="radio"
+            name="billingInterval"
+            checked={billingInterval === 'annual'}
+            onChange={() => setBillingInterval('annual')}
+          />
+          <span>Annual Billing <span style={{ color: '#059669', fontWeight: 700 }}>(Save ~17%)</span></span>
         </label>
       </div>
     </div>

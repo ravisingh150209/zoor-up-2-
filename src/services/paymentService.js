@@ -123,4 +123,66 @@ export const paymentService = {
       return { success: false, error: e.message };
     }
   },
+
+  createSubscriptionRazorpayOrder: async (data) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/payments/subscription/razorpay/create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...authStorage.getAuthHeaders(),
+        },
+        body: JSON.stringify(data),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to create Razorpay subscription order');
+      }
+      return await resp.json();
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      return { success: false, error: e.message };
+    }
+  },
+
+  verifySubscriptionRazorpayPayment: async (data) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/payments/subscription/razorpay/verify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...authStorage.getAuthHeaders(),
+        },
+        body: JSON.stringify(data),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to verify subscription payment');
+      }
+      return await resp.json();
+    } catch (e) {
+      if (isProductionEnvironment()) throw e;
+      return { success: false, error: e.message };
+    }
+  },
+
+  recordSubscriptionRazorpayFailure: async (data) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/payments/subscription/razorpay/failure`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...authStorage.getAuthHeaders(),
+        },
+        body: JSON.stringify(data),
+      });
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch (e) {
+      return null;
+    }
+  },
 };

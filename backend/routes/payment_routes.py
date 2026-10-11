@@ -21,8 +21,11 @@ from backend.razorpay_service import (
     RAZORPAY_MODE,
     RAZORPAY_KEY_ID,
     RAZORPAY_KEY_SECRET,
+    SUBSCRIPTION_PLAN_PRICING,
     create_razorpay_order_for_payment,
     verify_razorpay_payment,
+    create_razorpay_order_for_subscription,
+    verify_razorpay_subscription_payment,
     get_razorpay_payment_by_order_id,
     record_razorpay_payment_failure,
     verify_razorpay_webhook_signature,
@@ -505,6 +508,138 @@ def verify_razorpay_payment_route(req: RazorpayVerifyRequest, current_user: dict
 @router.post("/razorpay/failure")
 def record_razorpay_failure_route(req: RazorpayFailureRequest, current_user: dict = Depends(get_current_user)):
     """Records client-reported payment cancellation or failure."""
+    return record_razorpay_payment_failure(
+        razorpay_order_id=req.razorpay_order_id,
+        error_code=req.error_code,
+        error_description=req.error_description,
+    )
+
+
+# =============================================================================
+# BUSINESS SUBSCRIPTION RAZORPAY ROUTES
+# Reuses EXACT SAME Razorpay credentials, client, and configuration
+# =============================================================================
+
+class SubscriptionRazorpayOrderRequest(BaseModel):
+    plan_id: str
+    billing_interval: Optional[str] = "monthly"
+    business_id: Optional[str] = None
+
+
+class SubscriptionRazorpayVerifyRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+    plan_id: str
+    billing_interval: Optional[str] = "monthly"
+    business_id: Optional[str] = None
+
+
+@router.post("/subscription/razorpay/create")
+def create_subscription_razorpay_order_route(
+    req: SubscriptionRazorpayOrderRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Creates a Razorpay order for Business Subscription using the exact same
+    Razorpay merchant credentials and configuration as customer orders.
+    TEST MODE ONLY.
+    """
+    if RAZORPAY_MODE != "test":
+        raise HTTPException(status_code=400, detail="Razorpay is only available in test mode.")
+    
+    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+        raise HTTPException(status_code=500, detail="Razorpay credentials not configured on server.")
+    
+    role = (current_user.get("role") or "").upper()
+    enforce_rate_limit("sub-rzp-create-user", current_user.get("id"), 10, 3600)
+    enforce_rate_limit("sub-rzp-create-ip", request.client.host if request.client else "unknown", 40, 3600)
+    
+    if role not in (ROLE_BUSINESS_OWNER, ROLE_SUPER_ADMIN):
+        raise HTTPException(status_code=403, detail="Subscription payment initiation requires business owner or admin role.")
+    
+    business_id = req.business_id
+    if role == ROLE_BUSINESS_OWNER:
+        biz = get_collection("businesses").find_one({"owner_id": current_user["id"]})
+        if not biz or (business_id and business_id != biz.get("id")):
+            raise HTTPException(status_code=403, detail="You can only initiate subscription payments for your own business.")
+        business_id = biz["id"]
+    elif not business_id:
+        raise HTTPException(status_code=400, detail="Business ID is required for subscription payment.")
+    
+    try:
+        result = create_razorpay_order_for_subscription(
+            business_id=business_id,
+            plan_id=req.plan_id,
+            billing_interval=req.billing_interval or "monthly",
+            user_id=current_user.get("id")
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        if "razorpay" in str(type(e)).lower():
+            raise HTTPException(status_code=500, detail=f"Razorpay error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create Razorpay subscription order: {str(e)}")
+
+
+@router.post("/subscription/razorpay/verify")
+def verify_subscription_razorpay_route(
+    req: SubscriptionRazorpayVerifyRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Verifies Razorpay payment signature and activates the business subscription plan.
+    Does NOT create customer orders.
+    TEST MODE ONLY.
+    """
+    if RAZORPAY_MODE != "test":
+        raise HTTPException(status_code=400, detail="Razorpay is only available in test mode.")
+    
+    if not RAZORPAY_KEY_SECRET:
+        raise HTTPException(status_code=500, detail="Razorpay credentials not configured on server.")
+    
+    role = (current_user.get("role") or "").upper()
+    if role not in (ROLE_BUSINESS_OWNER, ROLE_SUPER_ADMIN):
+        raise HTTPException(status_code=403, detail="Subscription verification requires business owner or admin role.")
+    
+    business_id = req.business_id
+    if role == ROLE_BUSINESS_OWNER:
+        biz = get_collection("businesses").find_one({"owner_id": current_user["id"]})
+        if not biz or (business_id and business_id != biz.get("id")):
+            raise HTTPException(status_code=403, detail="You can only verify subscription payments for your own business.")
+        business_id = biz["id"]
+    elif not business_id:
+        p_rec = get_collection("payments").find_one({"razorpay_order_id": req.razorpay_order_id})
+        if p_rec and p_rec.get("business_id"):
+            business_id = p_rec["business_id"]
+        else:
+            raise HTTPException(status_code=400, detail="Business ID is required for subscription payment verification.")
+    
+    try:
+        result = verify_razorpay_subscription_payment(
+            razorpay_order_id=req.razorpay_order_id,
+            razorpay_payment_id=req.razorpay_payment_id,
+            razorpay_signature=req.razorpay_signature,
+            business_id=business_id,
+            plan_id=req.plan_id,
+            billing_interval=req.billing_interval,
+            user_id=current_user.get("id")
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to verify subscription payment: {str(e)}")
+
+
+@router.post("/subscription/razorpay/failure")
+def record_subscription_razorpay_failure_route(
+    req: RazorpayFailureRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Records client-reported subscription payment cancellation or failure."""
     return record_razorpay_payment_failure(
         razorpay_order_id=req.razorpay_order_id,
         error_code=req.error_code,

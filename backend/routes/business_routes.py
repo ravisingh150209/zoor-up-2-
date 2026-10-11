@@ -865,7 +865,7 @@ def update_business_profile(
     # Enforce Gallery Plan Limits
     if "gallery" in filtered_updates and isinstance(filtered_updates["gallery"], list):
         plan = (biz.get("subscription_plan") or "FREE").upper()
-        limits = {"PRO": 50, "GROWTH": 15, "STARTER": 5, "BASIC": 5, "FREE": 2}
+        limits = {"PREMIUM": 999, "PRO": 50, "GROWTH": 15, "STARTER": 5, "BASIC": 5, "FREE": 2}
         max_allowed = limits.get(plan, 2)
         if len(filtered_updates["gallery"]) > max_allowed:
             raise HTTPException(
@@ -1078,7 +1078,35 @@ def get_business_subscription(current_user: dict = Depends(require_role([ROLE_BU
     trial_active = False
     days_left = 0
 
-    if not is_free and trial_ends_at:
+    if not is_free and payment_status == "PAID":
+        # Authoritative Paid Subscription check
+        sub_ends_at = biz.get("subscription_ends_at") or biz.get("current_period_end")
+        if sub_ends_at:
+            try:
+                from datetime import timezone
+                sub_dt = datetime.fromisoformat(sub_ends_at.replace("Z", "+00:00"))
+                now_cmp = datetime.now(timezone.utc) if sub_dt.tzinfo else now_dt
+                if now_cmp >= sub_dt:
+                    is_expired = True
+                    sub_status = "EXPIRED"
+                    payment_status = "UNPAID"
+                    businesses_col.update_one(
+                        {"id": biz["id"]},
+                        {"$set": {
+                            "subscription_status": "EXPIRED",
+                            "payment_status": "UNPAID",
+                            "updated_at": now_dt.isoformat()
+                        }}
+                    )
+                else:
+                    sub_status = "ACTIVE"
+                    delta = sub_dt - now_cmp
+                    days_left = max(0, delta.days + (1 if delta.seconds > 0 else 0))
+            except Exception:
+                sub_status = "ACTIVE"
+        else:
+            sub_status = "ACTIVE"
+    elif not is_free and trial_ends_at:
         try:
             trial_dt = datetime.fromisoformat(trial_ends_at.replace("Z", "+00:00"))
             if trial_dt.tzinfo:
