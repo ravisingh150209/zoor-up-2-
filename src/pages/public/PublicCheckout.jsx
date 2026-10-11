@@ -130,8 +130,20 @@ export const PublicCheckout = () => {
   const grandTotal = Math.max(0, subtotal + taxAmount - appliedDiscount);
 
   // Authoritatively construct business-specific UPI payment URI
+  const formatUpiVpa = (vpa) => {
+    if (!vpa) return '';
+    const trimmed = vpa.trim();
+    const parts = trimmed.split('@');
+    if (parts.length === 2) {
+      return `${encodeURIComponent(parts[0])}@${encodeURIComponent(parts[1])}`;
+    }
+    return encodeURIComponent(trimmed);
+  };
+
+  const orderRef = cartBusinessId ? `ORD-${Date.now().toString(36).toUpperCase()}` : 'ORD';
+
   const storeUpiUri = upiConfig?.upi_id
-    ? `upi://pay?pa=${encodeURIComponent(upiConfig.upi_id)}&pn=${encodeURIComponent(upiConfig.upi_name || business?.name || 'Store')}&am=${grandTotal.toFixed(2)}&cu=INR&tn=${encodeURIComponent(upiConfig.upi_notes || `Order at ${business?.name || 'Store'}`)}`
+    ? `upi://pay?pa=${formatUpiVpa(upiConfig.upi_id)}&pn=${encodeURIComponent(upiConfig.upi_name || business?.name || 'Store')}&am=${grandTotal.toFixed(2)}&cu=INR&tn=${encodeURIComponent(upiConfig.upi_notes || `Order at ${business?.name || 'Store'}`)}&tr=${encodeURIComponent(orderRef)}`
     : '';
 
   const handleCopyUpi = () => {
@@ -717,6 +729,13 @@ export const PublicCheckout = () => {
                     {/* Deep-link button to open installed UPI App */}
                     <a
                       href={storeUpiUri}
+                      onClick={() => {
+                        if (storeUpiUri) {
+                          try {
+                            window.location.href = storeUpiUri;
+                          } catch (_) {}
+                        }
+                      }}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -735,6 +754,9 @@ export const PublicCheckout = () => {
                       <Smartphone size={18} />
                       Open in UPI App (GPay / PhonePe / Paytm)
                     </a>
+                    <p style={{ fontSize: '0.72rem', color: '#64748B', textAlign: 'center', margin: '0 0 0.5rem' }}>
+                      💡 If your UPI app does not open automatically, copy the Store UPI ID above or scan the QR code.
+                    </p>
 
                     <div style={{ padding: '0.5rem', background: '#FEF3C7', borderRadius: '8px', border: '1px solid #FDE68A', fontSize: '0.73rem', color: '#92400E', textAlign: 'left' }}>
                       ℹ️ Transfer ₹{grandTotal} directly to {upiConfig.upi_name || business?.name}. Your order will be placed with <strong>Pending Verification</strong> status until verified by the store.

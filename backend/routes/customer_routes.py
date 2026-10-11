@@ -719,10 +719,10 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
     # The customer_businesses collection and visits/orders/reservations all use customer_id format
     cus_visits = [v for v in visits_col.find({"customer_id": query_customer_id}) if v.get("business_id") in connected_biz_ids]
     cus_orders = [o for o in orders_col.find({"customer_id": query_customer_id}) if o.get("business_id") in connected_biz_ids]
-    cus_reservations = reservations_col.find({"customer_id": query_customer_id})
+    cus_reservations = list(reservations_col.find({"customer_id": query_customer_id}))
     if not cus_reservations:
         bookings_col = get_collection("table_bookings")
-        cus_reservations = bookings_col.find({"customer_id": query_customer_id})
+        cus_reservations = list(bookings_col.find({"customer_id": query_customer_id}))
 
     return {
         "success": True,

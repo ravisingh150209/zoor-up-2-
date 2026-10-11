@@ -168,10 +168,20 @@ export const PaymentStatus = () => {
   const amount = Number(invoice?.total_amount || invoice?.total || 0).toFixed(2);
   const txnRef = invoice?.order_id || invoice?.id || 'TXN';
 
+  const formatUpiVpa = (vpa) => {
+    if (!vpa) return '';
+    const trimmed = vpa.trim();
+    const parts = trimmed.split('@');
+    if (parts.length === 2) {
+      return `${encodeURIComponent(parts[0])}@${encodeURIComponent(parts[1])}`;
+    }
+    return encodeURIComponent(trimmed);
+  };
+
   // Construct safe UPI payment URI strictly matching store settings
   const paymentUpiUri = (invoice?.upi_uri || '').trim();
   const upiIntentUri = paymentUpiUri || (upiId
-    ? `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(upiName)}&am=${encodeURIComponent(amount)}&cu=INR&tn=${encodeURIComponent('Order ' + txnRef)}&tr=${encodeURIComponent(txnRef)}`
+    ? `upi://pay?pa=${formatUpiVpa(upiId)}&pn=${encodeURIComponent(upiName)}&am=${encodeURIComponent(amount)}&cu=INR&tn=${encodeURIComponent('Order ' + txnRef)}&tr=${encodeURIComponent(txnRef)}`
     : null);
 
   return (
@@ -360,6 +370,13 @@ export const PaymentStatus = () => {
                 <div>
                   <a
                     href={upiIntentUri}
+                    onClick={() => {
+                      if (upiIntentUri) {
+                        try {
+                          window.location.href = upiIntentUri;
+                        } catch (_) {}
+                      }
+                    }}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -378,7 +395,7 @@ export const PaymentStatus = () => {
                     <span>Pay in UPI App (GPay / PhonePe / Paytm)</span>
                   </a>
                   <p style={{ fontSize: '0.72rem', color: '#64748B', marginTop: '6px' }}>
-                    Tap above on mobile to launch your installed UPI app.
+                    Tap above on mobile to launch your installed UPI app. If it does not open, copy the Store UPI ID above or scan the QR code.
                   </p>
                 </div>
               </>

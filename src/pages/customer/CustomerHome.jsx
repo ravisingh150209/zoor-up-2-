@@ -21,10 +21,13 @@ import {
   Copy,
   Check,
   Calendar,
-  AlertCircle
+  AlertCircle,
+  Smartphone
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { loyaltyService } from '../../services/loyaltyService';
 import { customerService } from '../../services/customerService';
+import { businessService } from '../../services/businessService';
 import { notificationService } from '../../services/notificationService';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { LoyaltyCard3D } from '../../components/customer/LoyaltyCard3D';
@@ -58,6 +61,15 @@ export const CustomerHome = () => {
   const [businessScopeError, setBusinessScopeError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Customer Direct Pay UPI Modal State
+  const [isUpiModalOpen, setIsUpiModalOpen] = useState(false);
+  const [selectedBizForUpi, setSelectedBizForUpi] = useState(null);
+  const [upiSettings, setUpiSettings] = useState(null);
+  const [loadingUpi, setLoadingUpi] = useState(false);
+  const [upiAmount, setUpiAmount] = useState('');
+  const [upiNote, setUpiNote] = useState('');
+  const [copiedStoreUpi, setCopiedStoreUpi] = useState(false);
 
   // Active UI Tabs / Modals
   const [rewardsTab, setRewardsTab] = useState('AVAILABLE'); // 'AVAILABLE' | 'CLAIMED'
@@ -343,6 +355,68 @@ export const CustomerHome = () => {
     setTimeout(() => setCopiedCode(null), 3000);
   };
 
+  const formatUpiVpa = (vpa) => {
+    if (!vpa) return '';
+    const trimmed = vpa.trim();
+    const parts = trimmed.split('@');
+    if (parts.length === 2) {
+      return `${encodeURIComponent(parts[0])}@${encodeURIComponent(parts[1])}`;
+    }
+    return encodeURIComponent(trimmed);
+  };
+
+  const handleOpenUpiModal = async (targetBiz = null) => {
+    const biz = targetBiz || businesses.find(b => b.id === selectedBusinessId) || (businesses.length > 0 ? businesses[0] : null);
+    if (!biz) {
+      addToast('No connected store available. Scan a store QR to connect first.', 'info');
+      return;
+    }
+    setSelectedBizForUpi(biz);
+    setIsUpiModalOpen(true);
+    setLoadingUpi(true);
+    setUpiAmount('');
+    setUpiNote(`Store payment at ${biz.name || 'Store'}`);
+    try {
+      const upiData = await businessService.getPublicBusinessUpi(biz.id);
+      setUpiSettings(upiData);
+    } catch (err) {
+      console.warn('Failed to load store UPI settings:', err);
+      setUpiSettings({
+        upi_id: biz.upi_id || '',
+        upi_name: biz.upi_name || biz.name || '',
+        upi_notes: biz.upi_notes || '',
+        upi_enabled: Boolean(biz.upi_id),
+      });
+    } finally {
+      setLoadingUpi(false);
+    }
+  };
+
+  const handleSelectUpiBusiness = async (bizId) => {
+    const biz = businesses.find(b => b.id === bizId);
+    if (!biz) return;
+    setSelectedBizForUpi(biz);
+    setLoadingUpi(true);
+    try {
+      const upiData = await businessService.getPublicBusinessUpi(biz.id);
+      setUpiSettings(upiData);
+    } catch (err) {
+      console.warn('Failed to load store UPI settings:', err);
+      setUpiSettings({
+        upi_id: biz.upi_id || '',
+        upi_name: biz.upi_name || biz.name || '',
+        upi_notes: biz.upi_notes || '',
+        upi_enabled: Boolean(biz.upi_id),
+      });
+    } finally {
+      setLoadingUpi(false);
+    }
+  };
+
+  const currentUpiUri = upiSettings?.upi_id
+    ? `upi://pay?pa=${formatUpiVpa(upiSettings.upi_id)}&pn=${encodeURIComponent(upiSettings.upi_name || selectedBizForUpi?.name || 'Store')}&am=${encodeURIComponent(Number(upiAmount || 0).toFixed(2))}&cu=INR&tn=${encodeURIComponent(upiNote || 'ZOOR UP Store Payment')}&tr=${encodeURIComponent(`ZOOR-${Date.now().toString(36).toUpperCase()}`)}`
+    : '';
+
   // Stamp progress calculations
   const totalStampsRequired = 10;
   const currentStampsCycle = customerStamps % totalStampsRequired;
@@ -615,7 +689,7 @@ export const CustomerHome = () => {
             </div>
           </div>
           <div style={{ fontSize: '1.45rem', fontWeight: 800, color: '#1A2B49', lineHeight: 1.1 }}>
-            {levelInfo.currentTier.name}
+            {levelInfo?.currentTier?.name || levelInfo?.currentTier?.rank || 'MEMBER'}
           </div>
           <span style={{ fontSize: '0.72rem', color: '#64748B' }}>
             Level {levelInfo.currentLevel} of 5
@@ -1565,6 +1639,182 @@ export const CustomerHome = () => {
           ))}
         </div>
       </div>
+
+      {/* =================================================================
+          11. CUSTOMER PAY BUSINESS VIA UPI MODAL
+          ================================================================= */}
+      <Modal
+        isOpen={isUpiModalOpen}
+        onClose={() => setIsUpiModalOpen(false)}
+        title="Pay Business via UPI"
+        maxWidth="500px"
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          {/* Store Selection */}
+          <div>
+            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
+              Select Partnered Store
+            </label>
+            <select
+              value={selectedBizForUpi?.id || ''}
+              onChange={(e) => handleSelectUpiBusiness(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '0.65rem 0.85rem',
+                borderRadius: '10px',
+                border: '1.5px solid #CBD5E1',
+                fontSize: '0.9rem',
+                color: '#1A2B49',
+                outline: 'none',
+              }}
+            >
+              {businesses.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name} ({b.city || 'Store'})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {loadingUpi ? (
+            <div style={{ padding: '2rem', textAlign: 'center', color: '#64748B' }}>
+              Loading store UPI details...
+            </div>
+          ) : upiSettings?.upi_id ? (
+            <>
+              {/* Payment Amount & Note */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '0.75rem' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
+                    Amount (₹)
+                  </label>
+                  <input
+                    type="number"
+                    value={upiAmount}
+                    onChange={(e) => setUpiAmount(e.target.value)}
+                    placeholder="Enter amount"
+                    style={{
+                      width: '100%',
+                      padding: '0.65rem 0.85rem',
+                      borderRadius: '10px',
+                      border: '1.5px solid #CBD5E1',
+                      fontSize: '1rem',
+                      fontWeight: 700,
+                      color: '#1A2B49',
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
+                    Payment Note
+                  </label>
+                  <input
+                    type="text"
+                    value={upiNote}
+                    onChange={(e) => setUpiNote(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '0.65rem 0.85rem',
+                      borderRadius: '10px',
+                      border: '1.5px solid #CBD5E1',
+                      fontSize: '0.9rem',
+                      color: '#1A2B49',
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Scannable Store Payment QR */}
+              <div
+                style={{
+                  background: '#FAFAFB',
+                  border: '1.5px solid #E2E8F0',
+                  borderRadius: '16px',
+                  padding: '1.25rem',
+                  textAlign: 'center',
+                }}
+              >
+                <div
+                  style={{
+                    background: '#FFFFFF',
+                    padding: '12px',
+                    borderRadius: '14px',
+                    display: 'inline-block',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.06)',
+                  }}
+                >
+                  <QRCodeSVG value={currentUpiUri} size={150} level="M" />
+                </div>
+                <div style={{ marginTop: '0.75rem' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#1A2B49', display: 'block' }}>
+                    {upiSettings.upi_name || selectedBizForUpi?.name}
+                  </span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: '#64748B' }}>
+                    {upiSettings.upi_id}
+                  </span>
+                </div>
+                <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', marginTop: '4px' }}>
+                  Scan with GPay, PhonePe, Paytm, BHIM, or any UPI App
+                </span>
+              </div>
+
+              {/* Copy UPI Button */}
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  icon={copiedStoreUpi ? CheckCircle2 : Copy}
+                  onClick={() => {
+                    navigator.clipboard.writeText(upiSettings.upi_id);
+                    setCopiedStoreUpi(true);
+                    addToast('Store UPI ID copied to clipboard', 'info');
+                    setTimeout(() => setCopiedStoreUpi(false), 2000);
+                  }}
+                >
+                  {copiedStoreUpi ? 'Copied' : 'Copy Store UPI ID'}
+                </Button>
+              </div>
+
+              {/* Direct UPI Payment Intent Button for Mobile */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                <a
+                  href={currentUpiUri}
+                  onClick={() => {
+                    if (currentUpiUri) {
+                      try { window.location.href = currentUpiUri; } catch (_) {}
+                    }
+                  }}
+                  className="btn btn-primary"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.5rem',
+                    background: '#1A2B49',
+                    color: '#FFFFFF',
+                    padding: '0.85rem',
+                    borderRadius: '12px',
+                    textDecoration: 'none',
+                    fontWeight: 700,
+                  }}
+                >
+                  <Smartphone size={18} /> Pay via UPI App (₹{upiAmount || 0})
+                </a>
+                <p style={{ fontSize: '0.72rem', color: '#64748B', textAlign: 'center', margin: 0 }}>
+                  ⚠️ Status will show "Payment initiated" until verified at store counter.
+                </p>
+              </div>
+            </>
+          ) : (
+            <div style={{ padding: '2rem 1rem', textAlign: 'center', background: '#FAFAFB', borderRadius: '12px' }}>
+              <p style={{ color: '#64748B', fontSize: '0.85rem', margin: 0 }}>
+                This store has not configured a direct UPI ID yet. You can pay at the counter or via order checkout.
+              </p>
+            </div>
+          )}
+        </div>
+      </Modal>
 
       {/* =================================================================
           12. CLAIM REWARD CONFIRMATION MODAL
