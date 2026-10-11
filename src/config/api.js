@@ -41,7 +41,12 @@ export const fetchWithTimeout = async (url, options = {}, timeoutMs = 12000) => 
   const cacheKey = isGet ? `${url}__${token}` : null;
 
   if (isGet && inFlightRequests.has(cacheKey)) {
-    return inFlightRequests.get(cacheKey);
+    try {
+      const cachedRes = await inFlightRequests.get(cacheKey);
+      return cachedRes.clone();
+    } catch (_) {
+      // If cached response body was already consumed, bypass cache
+    }
   }
 
   const controller = new AbortController();
@@ -87,7 +92,8 @@ export const fetchWithTimeout = async (url, options = {}, timeoutMs = 12000) => 
     inFlightRequests.set(cacheKey, fetchPromise);
   }
 
-  return fetchPromise;
+  const finalRes = await fetchPromise;
+  return isGet ? finalRes.clone() : finalRes;
 };
 
 export const safeFetchJson = async (url, options = {}, timeoutMs = 12000) => {

@@ -44,6 +44,10 @@ export const OrdersManagement = () => {
   }, [bizId, statusFilter, search]);
 
   const loadOrders = async () => {
+    if (!bizId) {
+      setLoading(false);
+      return;
+    }
     const generation = ++requestGeneration.current;
     setLoading(true);
     setLoadError('');

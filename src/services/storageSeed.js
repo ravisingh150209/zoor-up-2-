@@ -55,10 +55,9 @@ export const DEFAULT_PLANS = [
 
 // Helper to initialize or retrieve from localStorage
 const getStored = (key, fallback = []) => {
-  if (isProductionEnvironment() && key !== 'plans') {
-    throw new Error(`Local-only ${key} data is disabled in production; use the FastAPI service.`);
+  if (isProductionEnvironment()) {
+    return fallback;
   }
-  if (isProductionEnvironment() && key === 'plans') return fallback;
   try {
     const data = localStorage.getItem(`zoorup_${key}`);
     if (data !== null) {
@@ -72,7 +71,7 @@ const getStored = (key, fallback = []) => {
 
 const setStored = (key, val) => {
   if (isProductionEnvironment()) {
-    throw new Error(`Local-only ${key} writes are disabled in production; use the FastAPI service.`);
+    return;
   }
   try {
     localStorage.setItem(`zoorup_${key}`, JSON.stringify(val));

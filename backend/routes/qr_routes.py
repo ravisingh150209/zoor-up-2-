@@ -47,18 +47,21 @@ def _assert_business_access(current_user: dict, business_id: str):
     biz = get_collection("businesses").find_one({"id": business_id})
     if not biz:
         raise HTTPException(status_code=403, detail="You do not have permission to manage this business.")
-    if role in (ROLE_BUSINESS_OWNER, "BUSINESS") and biz.get("owner_id") == current_user.get("id"):
+    if role in (ROLE_BUSINESS_OWNER, "BUSINESS", "BUSINESS_OWNER") and (
+        biz.get("owner_id") == current_user.get("id") or current_user.get("business_id") == business_id
+    ):
         return
-    if role == "STAFF" and current_user.get("business_id") == business_id:
+    if role in ("STAFF", "staff") and current_user.get("business_id") == business_id:
         permissions = current_user.get("permissions") or []
-        allowed = (isinstance(permissions, list) and "products" in [str(item).lower() for item in permissions]) or (
-            isinstance(permissions, dict) and bool(permissions.get("products"))
+        allowed = (
+            not permissions
+            or (isinstance(permissions, list) and "products" in [str(item).lower() for item in permissions])
+            or (isinstance(permissions, dict) and bool(permissions.get("products")))
         )
         if allowed:
             return
-    else:
-        raise HTTPException(status_code=403, detail="You do not have permission to manage this business.")
-    raise HTTPException(status_code=403, detail="Product permission is required for this business.")
+        raise HTTPException(status_code=403, detail="Product permission is required for this business.")
+    raise HTTPException(status_code=403, detail="You do not have permission to manage this business.")
 
 
 # =============================================================

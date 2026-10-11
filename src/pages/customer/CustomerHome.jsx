@@ -84,7 +84,7 @@ export const CustomerHome = () => {
   const levelInfo = loyaltyService.getLevelInfo(customerPoints, loyaltyStatus?.tiers);
   if (loyaltyStatus?.level) {
     levelInfo.currentLevel = loyaltyStatus.level;
-    if (loyaltyStatus.level_name) {
+    if (loyaltyStatus.level_name && levelInfo?.currentTier) {
       levelInfo.currentTier.name = loyaltyStatus.level_name;
     }
   }
@@ -171,9 +171,9 @@ export const CustomerHome = () => {
     }
   };
 
-  // Rule of Hooks compliance: All hooks MUST be declared unconditionally before any returns
+  // Store switcher effect: Only switch if businesses changed and selectedBusinessId is no longer valid
   useEffect(() => {
-    if (businesses.length > 0 && !selectedBusinessId) {
+    if (businesses.length > 0 && selectedBusinessId && !businesses.some((b) => b.id === selectedBusinessId)) {
       switchBusiness(businesses[0].id);
     }
   }, [businesses, selectedBusinessId]);
@@ -451,7 +451,7 @@ export const CustomerHome = () => {
           <p style={{ fontSize: '0.9rem', color: '#64748B', marginTop: '4px', margin: 0, fontWeight: 500 }}>
             {isNewCustomer
               ? 'Scan a participating business QR to earn your first reward.'
-              : `Level ${levelInfo.currentLevel} • ${levelInfo.currentTier.name} Member`}
+              : `Level ${levelInfo.currentLevel} • ${levelInfo.currentTier?.name || levelInfo.currentTier?.rank || 'MEMBER'} Member`}
           </p>
         </div>
 
@@ -468,7 +468,7 @@ export const CustomerHome = () => {
               boxShadow: '0 2px 8px rgba(26, 43, 73, 0.15)',
             }}
           >
-            LEVEL {levelInfo.currentLevel} • {levelInfo.currentTier.name}
+            LEVEL {levelInfo.currentLevel} • {levelInfo.currentTier?.name || levelInfo.currentTier?.rank || 'MEMBER'}
           </Badge>
         </div>
       </div>

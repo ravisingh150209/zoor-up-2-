@@ -47,9 +47,16 @@ ONBOARDING_STEP_FIELDS = {
 
 def _get_business_for_owner(current_user: dict):
     businesses_col = get_collection("businesses")
-    biz = businesses_col.find_one({"owner_id": current_user["id"]})
+    biz = None
+    if current_user.get("id"):
+        biz = businesses_col.find_one({"owner_id": current_user["id"]})
     if not biz and current_user.get("business_id"):
-        biz = businesses_col.find_one({"id": current_user["business_id"], "owner_id": current_user["id"]})
+        biz = businesses_col.find_one({"id": current_user["business_id"]})
+    if not biz and current_user.get("id"):
+        staff_col = get_collection("staff")
+        staff_rec = staff_col.find_one({"user_id": current_user["id"]}) or staff_col.find_one({"email": current_user.get("email")})
+        if staff_rec and staff_rec.get("business_id"):
+            biz = businesses_col.find_one({"id": staff_rec["business_id"]})
     if not biz:
         raise HTTPException(status_code=404, detail="Business not found.")
     return biz
@@ -80,7 +87,7 @@ def _calculate_customer_rank(points: int) -> str:
 
 
 @router.get("/business/dashboard")
-def get_business_dashboard(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
+def get_business_dashboard(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER, ROLE_STAFF]))):
     biz = _get_business_for_owner(current_user)
     business_id = biz["id"]
     
@@ -97,7 +104,8 @@ def get_business_dashboard(current_user: dict = Depends(require_role([ROLE_BUSIN
     recent_orders = list(orders_col.find({
         "business_id": business_id,
         "created_at": {"$gte": ninety_days_ago}
-    }).sort("created_at", -1))
+    }))
+    recent_orders.sort(key=lambda o: str(o.get("created_at") or ""), reverse=True)
     
     # Get today's orders
     today_orders = [o for o in recent_orders if str(o.get("created_at", "")).startswith(today)]
@@ -166,7 +174,7 @@ def get_business_dashboard(current_user: dict = Depends(require_role([ROLE_BUSIN
 @router.get("/business/analytics")
 def get_business_analytics(
     range: str = "7D",
-    current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))
+    current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER, ROLE_STAFF]))
 ):
     biz = _get_business_for_owner(current_user)
     business_id = biz["id"]
@@ -193,7 +201,8 @@ def get_business_analytics(
     recent_orders = list(orders_col.find({
         "business_id": business_id,
         "created_at": {"$gte": start_date}
-    }).sort("created_at", -1))
+    }))
+    recent_orders.sort(key=lambda o: str(o.get("created_at") or ""), reverse=True)
     
     products = list(get_collection("products").find({"business_id": business_id}))
     connections = list(get_collection("customer_businesses").find({"business_id": business_id, "status": "active"}))
@@ -258,7 +267,7 @@ def get_business_analytics(
 
 
 @router.get("/business/customers")
-def list_connected_business_customers(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER]))):
+def list_connected_business_customers(current_user: dict = Depends(require_role([ROLE_BUSINESS_OWNER, ROLE_STAFF]))):
     biz = _get_business_for_owner(current_user)
     target = _business_stamp_target(biz)
     connections = list(get_collection("customer_businesses").find({"business_id": biz["id"], "status": "active"}))

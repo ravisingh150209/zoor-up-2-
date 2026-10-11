@@ -81,6 +81,12 @@ export const BusinessDashboard = () => {
 
   const { stats, charts, business } = data;
 
+  const businessName = business?.name || user?.business_name || user?.name || 'My Business';
+  const businessLogo = business?.logo_url || business?.logo || null;
+  const businessCategory = business?.category || 'Retail & Dining';
+  const businessLocation = (business?.city && business?.state) ? `${business.city}, ${business.state}` : (business?.city || business?.state || 'Store');
+  const businessHours = (business?.open_time && business?.close_time) ? `${business.open_time} - ${business.close_time}` : 'Regular Hours';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', width: '100%', maxWidth: '100%', overflowX: 'hidden' }}>
       {/* Onboarding in progress banner if not finished */}
@@ -137,10 +143,10 @@ export const BusinessDashboard = () => {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-          {(business.logo_url || business.logo) ? (
+          {businessLogo ? (
             <img
-              src={business.logo_url || business.logo}
-              alt={business.name}
+              src={businessLogo}
+              alt={businessName}
               style={{ width: '48px', height: '48px', borderRadius: 'var(--radius-md)', objectFit: 'cover', border: '1px solid rgba(255,255,255,0.1)' }}
             />
           ) : (
@@ -149,12 +155,12 @@ export const BusinessDashboard = () => {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
               <h2 style={{ fontSize: '1.45rem', fontWeight: 800 }}>
-                {business.name}
+                {businessName}
               </h2>
               <Badge variant="success">Active Store</Badge>
             </div>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-              {business.category} • {business.city}, {business.state} • Operational Hours: {business.open_time} - {business.close_time}
+              {businessCategory} • {businessLocation} • Operational Hours: {businessHours}
             </p>
           </div>
         </div>

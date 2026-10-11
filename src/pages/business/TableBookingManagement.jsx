@@ -56,6 +56,8 @@ export const TableBookingManagement = () => {
   useEffect(() => {
     if (businessId) {
       loadAllData();
+    } else {
+      setLoading(false);
     }
   }, [businessId]);
 

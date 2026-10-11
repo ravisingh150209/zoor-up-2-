@@ -66,10 +66,10 @@ export const authService = {
 
   // Get active authenticated session from local cache, validated against database
   getCurrentUser: () => {
-    if (isProductionEnvironment()) return null;
     try {
       const user = authStorage.getUser();
       if (!user || !user.id) return null;
+      if (isProductionEnvironment()) return user;
 
       // Cross-reference with persistent users in localDB if available
       const users = localDB.getUsers();
@@ -122,11 +122,16 @@ export const authService = {
         if (data?.user) {
           const rawRole = (data.user.role || '').toLowerCase();
           const cleanUser = {
+            ...(cachedUser || {}),
             ...data.user,
-            role: rawRole === 'business_owner' || rawRole === 'business' ? 'business' : (rawRole || 'customer')
+            business_id: data.user.business_id || data.business?.id || cachedUser?.business_id || null,
+            business_slug: data.user.business_slug || data.business?.slug || cachedUser?.business_slug || null,
+            business_name: data.user.business_name || data.business?.name || cachedUser?.business_name || null,
+            customer_id: data.user.customer_id || data.customer?.id || cachedUser?.customer_id || null,
+            role: rawRole === 'business_owner' || rawRole === 'business' ? 'business' : (rawRole || cachedUser?.role || 'customer')
           };
           authStorage.saveSession(token, cleanUser);
-          return { user: cleanUser, business: data.business, error: null };
+          return { user: cleanUser, business: data.business, customer: data.customer, error: null };
         }
       } else if (resp.status === 401) {
         // Genuine 401 Unauthorized: token revoked or expired
@@ -135,24 +140,20 @@ export const authService = {
         return { user: null, error: 'Session expired. Please log in again.' };
       }
 
-      // Non-401 HTTP error (e.g., 500, 403) - in production, clear session and fail
-      if (isProductionEnvironment()) {
-        authStorage.clearSession();
-        return { user: null, error: 'Session could not be verified. Please log in again.' };
+      // Non-401 HTTP error (e.g., 500, 502, 503) - maintain session if cached user exists
+      if (cachedUser) {
+        console.warn(`[AUTH] Non-401 response (${resp.status}) from /api/auth/me, retaining cached user.`);
+        return { user: cachedUser, business: null, error: null };
       }
     } catch (err) {
-      // Network error or backend offline
+      // Network error or backend cold-start: maintain session if cached user exists
+      if (cachedUser) {
+        console.warn('[AUTH] Session validation network issue, maintaining cached session:', err);
+        return { user: cachedUser, business: null, error: null };
+      }
       if (isProductionEnvironment()) {
-        authStorage.clearSession();
         return { user: null, error: 'Authentication service is unavailable. Please try again.' };
       }
-      // Network error or backend offline: DO NOT LOG OUT in development!
-      console.warn('[AUTH] Session validation network issue, maintaining cached session:', err);
-    }
-
-    if (isProductionEnvironment()) {
-      authStorage.clearSession();
-      return { user: null, error: 'Session could not be verified. Please log in again.' };
     }
 
     // 2. Fallback: If cached user exists, keep user logged in!
@@ -193,7 +194,14 @@ export const authService = {
 
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data?.user && data?.access_token) {
-          const cleanUser = { ...data.user, role: role === 'business' ? 'business' : 'customer' };
+          const cleanUser = {
+            ...data.user,
+            business_id: data.user.business_id || data.business?.id || null,
+            business_slug: data.user.business_slug || data.business?.slug || null,
+            business_name: data.user.business_name || data.business?.name || null,
+            customer_id: data.user.customer_id || data.customer?.id || null,
+            role: role === 'business' ? 'business' : 'customer'
+          };
           authStorage.saveSession(data.access_token, cleanUser);
           return { user: cleanUser, customer: data.customer, business: data.business, error: null };
         }

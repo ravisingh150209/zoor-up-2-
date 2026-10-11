@@ -140,7 +140,10 @@ export const SubscriptionManagement = () => {
   }, [user?.business_id]);
 
   const loadSubscription = async () => {
-    if (!user?.business_id) return;
+    if (!user?.business_id) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const data = await businessService.getSubscription(user.business_id);

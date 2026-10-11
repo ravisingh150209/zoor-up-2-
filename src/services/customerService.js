@@ -363,7 +363,7 @@ export const customerService = {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json'
         }
-      }, 12000);
+      }, 20000);
 
       const data = await resp.json().catch(() => null);
 

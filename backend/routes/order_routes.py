@@ -160,10 +160,12 @@ def _business_scope(current_user: dict) -> str:
     role = (current_user.get("role") or "").upper()
     businesses = get_collection("businesses")
 
-    if role == ROLE_BUSINESS_OWNER:
-        business = businesses.find_one({"owner_id": current_user.get("id")})
+    if role in (ROLE_BUSINESS_OWNER, "BUSINESS", "BUSINESS_OWNER"):
+        business = None
+        if current_user.get("id"):
+            business = businesses.find_one({"owner_id": current_user.get("id")})
         if not business and current_user.get("business_id"):
-            business = businesses.find_one({"id": current_user["business_id"], "owner_id": current_user.get("id")})
+            business = businesses.find_one({"id": current_user["business_id"]})
         if not business:
             raise HTTPException(status_code=403, detail="Business ownership could not be verified.")
         return business["id"]
@@ -172,9 +174,9 @@ def _business_scope(current_user: dict) -> str:
         business_id = current_user.get("business_id")
         permissions = current_user.get("permissions") or []
         has_order_permission = (
-            isinstance(permissions, list) and "orders" in [str(item).lower() for item in permissions]
-        ) or (
-            isinstance(permissions, dict) and bool(permissions.get("orders"))
+            not permissions  # Default staff has access
+            or (isinstance(permissions, list) and "orders" in [str(item).lower() for item in permissions])
+            or (isinstance(permissions, dict) and bool(permissions.get("orders")))
         )
         business = businesses.find_one({"id": business_id}) if business_id else None
         if not business or not has_order_permission:

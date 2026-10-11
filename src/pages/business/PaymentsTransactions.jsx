@@ -137,7 +137,10 @@ export const PaymentsTransactions = () => {
   };
 
   const loadPayments = async () => {
-    if (!bizId) return;
+    if (!bizId) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const res = await paymentService.getPayments(bizId, {

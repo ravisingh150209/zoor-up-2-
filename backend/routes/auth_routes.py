@@ -865,12 +865,17 @@ def verify_otp(req: OTPVerifyRequest, request: Request):
 @router.get("/me")
 def get_authenticated_me(current_user: dict = Depends(get_current_user)):
     user_safe = {k: v for k, v in current_user.items() if k != "password_hash"}
+    role = (current_user.get("role") or "").lower()
+    user_safe["role"] = role
     res = {"user": user_safe}
-    if current_user.get("role") == ROLE_BUSINESS_OWNER:
-        businesses_col = get_collection("businesses")
-        biz = businesses_col.find_one({"owner_id": current_user["id"]})
+    businesses_col = get_collection("businesses")
+
+    if role in ("business", "business_owner"):
+        biz = None
+        if current_user.get("id"):
+            biz = businesses_col.find_one({"owner_id": current_user["id"]})
         if not biz and current_user.get("business_id"):
-            biz = businesses_col.find_one({"id": current_user["business_id"], "owner_id": current_user["id"]})
+            biz = businesses_col.find_one({"id": current_user["business_id"]})
         if biz:
             if not biz.get("slug"):
                 slug = generate_unique_business_slug(biz.get("name") or "Store", biz["id"], businesses_col)
@@ -878,9 +883,35 @@ def get_authenticated_me(current_user: dict = Depends(get_current_user)):
                 biz["slug"] = slug
             user_safe["business_slug"] = biz.get("slug")
             user_safe["business_id"] = biz["id"]
+            user_safe["business_name"] = biz.get("name", "")
+        elif current_user.get("business_id"):
+            user_safe["business_id"] = current_user.get("business_id")
         res["business"] = biz
-    elif current_user.get("role") == ROLE_CUSTOMER:
+    elif role in ("staff",):
+        biz = None
+        if current_user.get("business_id"):
+            biz = businesses_col.find_one({"id": current_user["business_id"]})
+        if not biz:
+            staff_col = get_collection("staff")
+            staff_rec = staff_col.find_one({"user_id": current_user["id"]}) or staff_col.find_one({"email": current_user.get("email")})
+            if staff_rec and staff_rec.get("business_id"):
+                biz = businesses_col.find_one({"id": staff_rec["business_id"]})
+        if biz:
+            user_safe["business_slug"] = biz.get("slug")
+            user_safe["business_id"] = biz["id"]
+            user_safe["business_name"] = biz.get("name", "")
+        elif current_user.get("business_id"):
+            user_safe["business_id"] = current_user.get("business_id")
+        res["business"] = biz
+    elif role in ("customer",):
         customers_col = get_collection("customers")
-        cus = customers_col.find_one({"user_id": current_user["id"]}) or customers_col.find_one({"phone": current_user.get("phone")})
+        cus = (
+            (customers_col.find_one({"customer_id": current_user.get("customer_id")}) if current_user.get("customer_id") else None) or
+            customers_col.find_one({"user_id": current_user["id"]}) or
+            (customers_col.find_one({"email": current_user.get("email")}) if current_user.get("email") else None) or
+            (customers_col.find_one({"phone": current_user.get("phone")}) if current_user.get("phone") else None)
+        )
+        if cus:
+            user_safe["customer_id"] = cus.get("customer_id") or current_user.get("customer_id")
         res["customer"] = cus
     return res
