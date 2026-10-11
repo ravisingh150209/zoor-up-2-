@@ -1,6 +1,6 @@
 import { isProductionEnvironment, localDB } from './storageSeed.js';
 import { authStorage } from '../auth/authStorage.js';
-import { API_BASE_URL as API_BASE } from '../config/api.js';
+import { API_BASE_URL as API_BASE, fetchWithTimeout } from '../config/api.js';
 
 export const calculateRank = (points) => {
   const pts = Number(points) || 0;
@@ -350,24 +350,36 @@ export const customerService = {
 
   getCustomerHome: async () => {
     const token = authStorage.getToken();
-    if (token) {
-      try {
-        const resp = await fetch(`${API_BASE}/api/customer/home`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/json'
-          }
-        });
-        if (resp.ok) {
-          return await resp.json();
-        }
-      } catch (e) {
-        console.warn('Failed to fetch customer home from backend:', e);
-        if (isProductionEnvironment()) throw e;
+    if (!token) {
+      if (isProductionEnvironment()) {
+        throw new Error('Please log in to view customer home.');
       }
+      return null;
     }
-    if (isProductionEnvironment()) throw new Error('Customer home is unavailable from the backend.');
-    return null;
+
+    try {
+      const resp = await fetchWithTimeout(`${API_BASE}/api/customer/home`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        }
+      }, 12000);
+
+      const data = await resp.json().catch(() => null);
+
+      if (resp.status === 401) {
+        throw new Error('Session expired. Please log in again.');
+      }
+
+      if (!resp.ok) {
+        throw new Error(data?.detail || data?.message || `Failed to load customer dashboard (${resp.status})`);
+      }
+
+      return data;
+    } catch (e) {
+      console.warn('Failed to fetch customer home from backend:', e);
+      throw e;
+    }
   },
 
   connectBusiness: async (businessId, source = 'qr_scan') => {

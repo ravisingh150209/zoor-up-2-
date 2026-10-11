@@ -1,6 +1,6 @@
 import { isProductionEnvironment, localDB } from './storageSeed.js';
 
-import { API_BASE_URL as API_BASE } from '../config/api.js';
+import { API_BASE_URL as API_BASE, fetchWithTimeout } from '../config/api.js';
 
 export const LOYALTY_LEVELS = [
   { level: 1, name: 'BASIC', minPoints: 0, maxPoints: 499, color: '#1A2B49', accentColor: '#F59E0B', badge: 'BASIC MEMBER', perk: '1x Points on Purchases' },
@@ -88,12 +88,12 @@ export const loyaltyService = {
       throw new Error('Please log in to view loyalty data.');
     }
 
-    const resp = await fetch(`${API_BASE}/api/customer/loyalty/status`, {
+    const resp = await fetchWithTimeout(`${API_BASE}/api/customer/loyalty/status`, {
       headers: {
         'Authorization': `Bearer ${authToken}`,
         'Accept': 'application/json'
       }
-    });
+    }, 10000);
 
     if (!resp.ok) {
       throw await buildLoyaltyError(resp, 'Unable to load loyalty data.');
@@ -115,12 +115,12 @@ export const loyaltyService = {
       throw new Error('No business selected.');
     }
 
-    const resp = await fetch(`${API_BASE}/api/loyalty/${encodeURIComponent(String(businessId))}`, {
+    const resp = await fetchWithTimeout(`${API_BASE}/api/loyalty/${encodeURIComponent(String(businessId))}`, {
       headers: {
         'Authorization': `Bearer ${authToken}`,
         'Accept': 'application/json'
       }
-    });
+    }, 10000);
 
     if (!resp.ok) {
       throw await buildLoyaltyError(resp, 'Unable to load this business loyalty data.');
@@ -432,7 +432,7 @@ export const loyaltyService = {
       if (authToken) {
         headers['Authorization'] = `Bearer ${authToken}`;
       }
-      const resp = await fetch(url, { headers });
+      const resp = await fetchWithTimeout(url, { headers }, 10000);
       if (resp.ok) {
         const data = await resp.json();
         if (data && Array.isArray(data.rewards)) {
@@ -514,12 +514,12 @@ export const loyaltyService = {
     const authToken = authStorage.getToken();
     if (!authToken) return [];
     try {
-      const resp = await fetch(`${API_BASE}/api/customer/rewards/claimed`, {
+      const resp = await fetchWithTimeout(`${API_BASE}/api/customer/rewards/claimed`, {
         headers: {
           'Authorization': `Bearer ${authToken}`,
           'Accept': 'application/json',
         },
-      });
+      }, 10000);
       if (resp.ok) {
         const data = await resp.json();
         if (data && Array.isArray(data.claims)) {
@@ -531,6 +531,7 @@ export const loyaltyService = {
     }
     return [];
   },
+
 
   redeemReward: async (voucherId) => {
     const authToken = authStorage.getToken();

@@ -28,23 +28,92 @@ export const getRequestHeaders = (extraHeaders = {}) => {
   };
 };
 
-export const safeFetchJson = async (url, options = {}) => {
+// In-flight GET request deduplication cache to prevent duplicate waterfalls
+const inFlightRequests = new Map();
+
+/**
+ * Fetch wrapper with finite request timeout and automatic in-flight deduplication for GET requests
+ */
+export const fetchWithTimeout = async (url, options = {}, timeoutMs = 12000) => {
+  const method = (options.method || 'GET').toUpperCase();
+  const isGet = method === 'GET';
+  const token = authStorage.getToken() || '';
+  const cacheKey = isGet ? `${url}__${token}` : null;
+
+  if (isGet && inFlightRequests.has(cacheKey)) {
+    return inFlightRequests.get(cacheKey);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error('REQUEST_TIMEOUT'));
+  }, timeoutMs);
+
+  if (options.signal) {
+    options.signal.addEventListener('abort', () => {
+      clearTimeout(timer);
+      controller.abort();
+    });
+  }
+
+  const startTime = Date.now();
+  const fetchPromise = (async () => {
+    try {
+      const res = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      const duration = Date.now() - startTime;
+      if (typeof window !== 'undefined' && window.__ZOORUP_DEBUG__) {
+        console.log(`[API ${method}] ${url} -> ${res.status} (${duration}ms)`);
+      }
+      return res;
+    } catch (err) {
+      const duration = Date.now() - startTime;
+      if (err.name === 'AbortError' || err.message === 'REQUEST_TIMEOUT') {
+        console.warn(`[API TIMEOUT] ${method} ${url} exceeded ${timeoutMs}ms (${duration}ms)`);
+        throw new Error('Request timed out. Please check your connection.');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (cacheKey) {
+        inFlightRequests.delete(cacheKey);
+      }
+    }
+  })();
+
+  if (isGet) {
+    inFlightRequests.set(cacheKey, fetchPromise);
+  }
+
+  return fetchPromise;
+};
+
+export const safeFetchJson = async (url, options = {}, timeoutMs = 12000) => {
   const finalHeaders = {
     ...getRequestHeaders(),
     ...(options.headers || {})
   };
-  const res = await fetch(url, { ...options, headers: finalHeaders });
+  const res = await fetchWithTimeout(url, { ...options, headers: finalHeaders }, timeoutMs);
   const contentType = res.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) {
     const rawText = await res.text();
     if (!res.ok) {
+      if (res.status === 401) {
+        throw new Error('Session expired. Please log in again.');
+      }
       throw new Error(`API error ${res.status}: ${rawText.slice(0, 100)}`);
     }
     return { success: true, text: rawText };
   }
   const data = await res.json();
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Session expired. Please log in again.');
+    }
     throw new Error(data.detail || data.message || `Request failed with status ${res.status}`);
   }
   return data;
 };
+

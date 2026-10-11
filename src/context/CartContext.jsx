@@ -2,26 +2,56 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 
 const CartContext = createContext(null);
 
-export const CartProvider = ({ children }) => {
-  const [items, setItems] = useState([]);
-  const [businessId, setBusinessId] = useState('');
-  const [businessSlug, setBusinessSlug] = useState('');
-  const [businessName, setBusinessName] = useState('');
-
-  // Load from local storage if available
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem('zoorup_cart');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setItems(parsed.items || []);
-        setBusinessId(parsed.businessId || '');
-        setBusinessSlug(parsed.businessSlug || '');
-        setBusinessName(parsed.businessName || '');
-      }
-    } catch (e) {
-      console.error(e);
+const readStoredCart = () => {
+  if (typeof localStorage === 'undefined') {
+    return { items: [], businessId: '', businessSlug: '', businessName: '' };
+  }
+  try {
+    const stored = localStorage.getItem('zoorup_cart');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      return {
+        items: Array.isArray(parsed.items) ? parsed.items : [],
+        businessId: parsed.businessId || '',
+        businessSlug: parsed.businessSlug || '',
+        businessName: parsed.businessName || '',
+      };
     }
+  } catch (e) {
+    console.warn('[CART STORAGE] Parse error:', e);
+  }
+  return { items: [], businessId: '', businessSlug: '', businessName: '' };
+};
+
+export const CartProvider = ({ children }) => {
+  const [initialCart] = useState(readStoredCart);
+  const [items, setItems] = useState(initialCart.items);
+  const [businessId, setBusinessId] = useState(initialCart.businessId);
+  const [businessSlug, setBusinessSlug] = useState(initialCart.businessSlug);
+  const [businessName, setBusinessName] = useState(initialCart.businessName);
+
+  // Synchronize across tabs or native WebView storage injections
+  useEffect(() => {
+    const handleStorageChange = (e) => {
+      if (e.key === 'zoorup_cart') {
+        if (!e.newValue) {
+          setItems([]);
+          setBusinessId('');
+          setBusinessSlug('');
+          setBusinessName('');
+          return;
+        }
+        try {
+          const parsed = JSON.parse(e.newValue);
+          setItems(Array.isArray(parsed.items) ? parsed.items : []);
+          if (parsed.businessId !== undefined) setBusinessId(parsed.businessId);
+          if (parsed.businessSlug !== undefined) setBusinessSlug(parsed.businessSlug);
+          if (parsed.businessName !== undefined) setBusinessName(parsed.businessName);
+        } catch {}
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
   const saveCart = (newItems, bId, slug, bName) => {
@@ -34,12 +64,16 @@ export const CartProvider = ({ children }) => {
     if (finalSlug !== undefined) setBusinessSlug(finalSlug);
     if (finalBName !== undefined) setBusinessName(finalBName);
 
-    localStorage.setItem('zoorup_cart', JSON.stringify({
-      items: newItems,
-      businessId: finalBId,
-      businessSlug: finalSlug,
-      businessName: finalBName,
-    }));
+    try {
+      localStorage.setItem('zoorup_cart', JSON.stringify({
+        items: newItems,
+        businessId: finalBId,
+        businessSlug: finalSlug,
+        businessName: finalBName,
+      }));
+    } catch (err) {
+      console.warn('[CART] Failed to write localStorage:', err);
+    }
   };
 
   /**

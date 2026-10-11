@@ -18,11 +18,31 @@ export class ErrorBoundary extends React.Component {
   }
 
   handleRetry = () => {
-    this.setState({ hasError: false, error: null, errorInfo: null });
+    if (this.state.retryCount && this.state.retryCount >= 1) {
+      window.location.reload();
+    } else {
+      this.setState(prev => ({
+        hasError: false,
+        error: null,
+        errorInfo: null,
+        retryCount: (prev.retryCount || 0) + 1
+      }));
+    }
   };
 
   handleGoHome = () => {
-    window.location.href = '/';
+    let target = '/';
+    try {
+      const userStr = localStorage.getItem('zoorup_user') || localStorage.getItem('zoorup_current_user');
+      if (userStr) {
+        const u = JSON.parse(userStr);
+        const role = (u?.role || '').toLowerCase();
+        if (role === 'customer') target = '/customer';
+        else if (role === 'business' || role === 'business_owner' || role === 'staff') target = '/business';
+        else if (role === 'admin' || role === 'super_admin') target = '/admin';
+      }
+    } catch {}
+    window.location.href = target;
   };
 
   render() {

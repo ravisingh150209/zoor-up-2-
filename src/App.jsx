@@ -107,6 +107,7 @@ export function App() {
               <Route path="/loyalty/:businessId" element={<Suspense fallback={<PageSkeleton />}> <CustomerLoyalty /> </Suspense>} />
               <Route path="/customer/:customerId" element={<Suspense fallback={<PageSkeleton />}> <CustomerProfile /> </Suspense>} />
               <Route path="/checkout" element={<PublicCheckout />} />
+              <Route path="/cart" element={<Navigate to="/checkout" replace />} />
               <Route path="/payment-status/:txnId" element={<PaymentStatus />} />
               <Route path="/order-success/:orderId" element={<OrderSuccess />} />
               <Route path="/download" element={<DownloadPage />} />

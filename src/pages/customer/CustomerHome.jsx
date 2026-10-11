@@ -70,6 +70,7 @@ export const CustomerHome = () => {
   // Check-in Celebration State
   const [celebrationData, setCelebrationData] = useState(null);
   const celebratedRef = useRef(false);
+  const inFlightRef = useRef(false);
 
   const customerId = profile?.customer_id || user?.customer_id;
   const customerName = profile?.name || user?.name || 'Customer';
@@ -170,7 +171,16 @@ export const CustomerHome = () => {
     }
   };
 
+  // Rule of Hooks compliance: All hooks MUST be declared unconditionally before any returns
+  useEffect(() => {
+    if (businesses.length > 0 && !selectedBusinessId) {
+      switchBusiness(businesses[0].id);
+    }
+  }, [businesses, selectedBusinessId]);
+
   const loadAllDashboardData = async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setLoading(true);
     setError(null);
     setBusinessScopeError(null);
@@ -266,6 +276,7 @@ export const CustomerHome = () => {
       console.error('Error loading customer dashboard data:', err);
       setError(getErrorMessage(err, 'Unable to load your loyalty card.'));
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
   };
@@ -404,12 +415,6 @@ export const CustomerHome = () => {
       </div>
     );
   }
-
-  useEffect(() => {
-    if (businesses.length > 0 && !selectedBusinessId) {
-      switchBusiness(businesses[0].id);
-    }
-  }, [businesses, selectedBusinessId]);
 
   const hasBusinessSelection = businesses.length > 0 && selectedBusinessId;
   if (businesses.length === 0) {
