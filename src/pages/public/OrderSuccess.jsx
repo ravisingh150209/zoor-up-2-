@@ -135,8 +135,15 @@ export const OrderSuccess = () => {
 
         {/* Navigation Buttons */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-          {business?.slug && (
-            <Link to={`/m/${business.slug}`} className="btn btn-secondary btn-block">
+          {(business?.slug || business?.id) && (
+            <Link
+              to={
+                business.slug
+                  ? `/m/${business.slug}${order.table_number ? `?table=${encodeURIComponent(order.table_number)}` : ''}`
+                  : `/b/${business.id}/menu${order.table_number ? `?table=${encodeURIComponent(order.table_number)}` : ''}`
+              }
+              className="btn btn-secondary btn-block"
+            >
               Back to Store Menu
             </Link>
           )}

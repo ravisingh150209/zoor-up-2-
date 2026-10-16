@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from backend.auth import require_role, get_current_user
+from backend.auth import require_role, get_current_user, get_optional_current_user
 from backend.database import get_collection
 from backend.models import (
     OrderCreateRequest,
@@ -370,12 +370,42 @@ def _sorted_orders(records):
 def create_order(
     request: OrderCreateRequest,
     http_request: Request,
-    current_user: dict = Depends(require_role([ROLE_CUSTOMER])),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
 ):
-    enforce_rate_limit("order-create-user", current_user.get("id"), 12, 3600)
     client_ip = http_request.client.host if http_request.client else "unknown"
     enforce_rate_limit("order-create-ip", client_ip, 60, 3600)
-    customer_id, customer = _customer_identity(current_user)
+
+    if current_user:
+        enforce_rate_limit("order-create-user", current_user.get("id"), 12, 3600)
+        customer_id, customer = _customer_identity(current_user)
+    else:
+        # Guest Checkout
+        cust_name = (request.customer_name or "").strip()
+        cust_phone = (request.customer_phone or "").strip()
+        if not cust_name or not cust_phone:
+            raise HTTPException(status_code=400, detail="Customer Name and Contact Mobile Number are required for guest checkout.")
+
+        cust_col = get_collection("customers")
+        existing_cust = cust_col.find_one({"phone": cust_phone})
+        if existing_cust:
+            customer_id = existing_cust.get("customer_id") or existing_cust.get("id")
+            customer = existing_cust
+        else:
+            guest_cid = f"ZUP-GUEST-{uuid.uuid4().hex[:8].upper()}"
+            customer_id = guest_cid
+            customer = {
+                "id": str(uuid.uuid4()),
+                "customer_id": guest_cid,
+                "name": cust_name,
+                "phone": cust_phone,
+                "role": "customer",
+                "is_guest": True,
+            }
+            try:
+                cust_col.insert_one(customer)
+            except Exception:
+                pass
+
     raw_business_id = request.business_id.strip()
     businesses_col = get_collection("businesses")
     business = (
@@ -400,14 +430,15 @@ def create_order(
     business_id = business["id"]
 
     cb_col = get_collection("customer_businesses")
+    user_key = current_user.get("id") if current_user else customer_id
     connection = cb_col.find_one({
         "customer_id": customer_id,
         "business_id": business_id,
         "status": "active",
     })
-    if not connection:
+    if not connection and user_key:
         connection = cb_col.find_one({
-            "customer_id": current_user.get("id"),
+            "customer_id": user_key,
             "business_id": business_id,
             "status": "active",
         })
@@ -422,21 +453,27 @@ def create_order(
             "created_at": now_str,
             "updated_at": now_str,
         }
-        cb_col.insert_one(connection)
+        try:
+            cb_col.insert_one(connection)
+        except Exception:
+            pass
 
         # Also initialize loyalty account for this customer-store pair
         loyalty_col = get_collection("loyalty")
         if not loyalty_col.find_one({"customer_id": customer_id, "business_id": business_id}):
-            loyalty_col.insert_one({
-                "id": f"loyal_{uuid.uuid4().hex[:12]}",
-                "customer_id": customer_id,
-                "business_id": business_id,
-                "points": 0,
-                "stamps": 0,
-                "tier": "BASIC",
-                "created_at": now_str,
-                "updated_at": now_str,
-            })
+            try:
+                loyalty_col.insert_one({
+                    "id": f"loyal_{uuid.uuid4().hex[:12]}",
+                    "customer_id": customer_id,
+                    "business_id": business_id,
+                    "points": 0,
+                    "stamps": 0,
+                    "tier": "BASIC",
+                    "created_at": now_str,
+                    "updated_at": now_str,
+                })
+            except Exception:
+                pass
 
     normalized_lines = []
     seen_products = {}
@@ -536,10 +573,11 @@ def create_order(
         "business_name": business.get("name", "Store"),
         "customer_id": customer_id,
         "customer_code": customer_id,
-        "customer_user_id": current_user["id"],
-        "customer_name": (request.customer_name or customer.get("name") or current_user.get("name") or "Customer").strip(),
-        "customer_phone": (request.customer_phone or customer.get("phone") or current_user.get("phone") or "").strip(),
-        "customer_email": customer.get("email") or current_user.get("email") or "",
+        "customer_user_id": current_user.get("id") if current_user else None,
+        "is_guest": current_user is None,
+        "customer_name": (request.customer_name or customer.get("name") or (current_user.get("name") if current_user else None) or "Customer").strip(),
+        "customer_phone": (request.customer_phone or customer.get("phone") or (current_user.get("phone") if current_user else None) or "").strip(),
+        "customer_email": customer.get("email") or (current_user.get("email") if current_user else None) or "",
         "items": normalized_lines,
         "subtotal": float(subtotal),
         "discount": float(applied_discount),
@@ -709,11 +747,17 @@ def get_my_orders(
 
 
 @router.get("/orders/{order_id}")
-def get_my_order(order_id: str, current_user: dict = Depends(get_current_user)):
+def get_my_order(order_id: str, current_user: Optional[dict] = Depends(get_optional_current_user)):
     orders = get_collection("orders")
     order = orders.find_one({"id": order_id}) or orders.find_one({"order_id": order_id})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
+
+    if not current_user:
+        # For guest orders, allow viewing receipt/status with exact order_id
+        if not order.get("is_guest") and order.get("customer_user_id"):
+            raise HTTPException(status_code=401, detail="Authentication required to view this order.")
+        return _normalize_order(order)
 
     role = (current_user.get("role") or "").upper()
     if role in [ROLE_BUSINESS_OWNER, ROLE_STAFF]:

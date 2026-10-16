@@ -30,16 +30,27 @@ export const PublicCart = () => {
     businessId,
     businessSlug,
     businessName,
+    tableId,
   } = useCart();
 
   const taxAmount = Math.round((subtotal * 5) / 100);
   const grandTotal = subtotal + taxAmount;
 
-  const menuUrl = businessSlug
+  const baseMenuUrl = businessSlug
     ? `/m/${businessSlug}`
     : businessId
     ? `/b/${businessId}/menu`
     : '/customer';
+
+  const menuUrl = tableId && baseMenuUrl !== '/customer'
+    ? `${baseMenuUrl}?table=${encodeURIComponent(tableId)}`
+    : baseMenuUrl;
+
+  const checkoutUrl = businessSlug
+    ? `/m/${businessSlug}/checkout${tableId ? `?table=${encodeURIComponent(tableId)}` : ''}`
+    : businessId
+    ? `/b/${businessId}/checkout${tableId ? `?table=${encodeURIComponent(tableId)}` : ''}`
+    : `/checkout${tableId ? `?table=${encodeURIComponent(tableId)}` : ''}`;
 
   // Empty Cart State
   if (!items || items.length === 0) {
@@ -455,7 +466,7 @@ export const PublicCart = () => {
           <Button
             variant="primary"
             size="lg"
-            onClick={() => navigate('/checkout')}
+            onClick={() => navigate(checkoutUrl)}
             icon={ArrowRight}
             style={{
               flex: 1,

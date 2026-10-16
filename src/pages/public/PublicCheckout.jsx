@@ -163,18 +163,29 @@ export const PublicCheckout = () => {
       setTables(bizTables || []);
       if (bizTables && bizTables.length > 0) {
         const found = preselectedTable
-          ? bizTables.find((t) => t.id === preselectedTable || t.table_number === preselectedTable || t.name === preselectedTable)
+          ? bizTables.find((t) => t.id === preselectedTable || String(t.table_number) === String(preselectedTable) || t.name === preselectedTable)
           : null;
-        setSelectedTableId((prev) => prev || found?.id || bizTables[0].id);
-        setSelectedTableNumber((prev) => prev || found?.table_number || found?.name || bizTables[0].table_number);
+        if (found) {
+          setSelectedTableId((prev) => prev || found.id);
+          setSelectedTableNumber((prev) => prev || found.table_number || found.name);
+        } else if (preselectedTable) {
+          setSelectedTableId((prev) => prev || '__CUSTOM__');
+          setSelectedTableNumber((prev) => prev || preselectedTable);
+          setCustomTableNumber((prev) => prev || preselectedTable);
+        } else {
+          setSelectedTableId((prev) => prev || bizTables[0].id);
+          setSelectedTableNumber((prev) => prev || bizTables[0].table_number || bizTables[0].name);
+        }
       } else if (preselectedTable) {
         setCustomTableNumber((prev) => prev || preselectedTable);
+        setSelectedTableNumber((prev) => prev || preselectedTable);
       }
     } catch (e) {
       console.warn('Optional dining tables could not be loaded for checkout:', e);
       setTables([]);
       if (preselectedTable) {
         setCustomTableNumber((prev) => prev || preselectedTable);
+        setSelectedTableNumber((prev) => prev || preselectedTable);
       }
     }
   };
@@ -230,11 +241,6 @@ export const PublicCheckout = () => {
       addToast('Verifying session, please try again in a moment...', 'info');
       return;
     }
-    if ((user?.role || '').toUpperCase() !== 'CUSTOMER') {
-      addToast('Please sign in to your customer pass to complete your order.', 'info');
-      navigate('/login/customer?redirect=/checkout');
-      return;
-    }
     const targetBizId = business?.id || businessId || items[0]?.business_id || businessSlug;
     if (!targetBizId) {
       addToast('The selected business could not be verified.', 'error');
@@ -254,16 +260,13 @@ export const PublicCheckout = () => {
     let finalTableId = null;
 
     if (orderType === 'DINE_IN') {
-      if (tables.length > 0) {
-        if (!selectedTableId) {
-          addToast('Please select your dining table', 'error');
-          return;
-        }
+      if (tables.length > 0 && selectedTableId && selectedTableId !== '__CUSTOM__') {
         const found = tables.find((t) => t.id === selectedTableId);
         finalTableId = found?.id || selectedTableId;
-        finalTableNumber = found?.table_number || selectedTableNumber;
+        finalTableNumber = found?.table_number || found?.name || selectedTableNumber;
       } else {
-        finalTableNumber = customTableNumber.trim() || preselectedTable || 'Counter / Open Seating';
+        finalTableNumber = customTableNumber.trim() || selectedTableNumber || preselectedTable || 'Counter / Open Seating';
+        finalTableId = null;
       }
     }
 
@@ -408,10 +411,10 @@ export const PublicCheckout = () => {
           >
             <div>
               <strong style={{ fontSize: '0.88rem', color: '#1E40AF', display: 'block' }}>
-                Customer Account Required to Place Orders
+                Guest Checkout Active
               </strong>
               <p style={{ margin: 0, fontSize: '0.78rem', color: '#3B82F6' }}>
-                Sign in to your customer pass to earn rewards and track this order.
+                You can place your order now, or sign in to your customer pass to earn rewards and track this order.
               </p>
             </div>
             <Link
@@ -538,9 +541,14 @@ export const PublicCheckout = () => {
                 <select
                   value={selectedTableId}
                   onChange={(e) => {
-                    setSelectedTableId(e.target.value);
-                    const t = tables.find((item) => item.id === e.target.value);
-                    if (t) setSelectedTableNumber(t.table_number);
+                    const val = e.target.value;
+                    setSelectedTableId(val);
+                    if (val === '__CUSTOM__') {
+                      setSelectedTableNumber(customTableNumber || preselectedTable || '');
+                    } else {
+                      const t = tables.find((item) => item.id === val);
+                      if (t) setSelectedTableNumber(t.table_number || t.name);
+                    }
                   }}
                   style={{
                     width: '100%',
@@ -556,6 +564,11 @@ export const PublicCheckout = () => {
                       Table {t.table_number} ({t.seating_capacity} Seats) - {t.section || 'Main Area'}
                     </option>
                   ))}
+                  {preselectedTable && !tables.some((t) => t.id === preselectedTable || String(t.table_number) === String(preselectedTable)) && (
+                    <option value="__CUSTOM__">
+                      Scanned Table: {preselectedTable}
+                    </option>
+                  )}
                 </select>
               ) : (
                 <Input

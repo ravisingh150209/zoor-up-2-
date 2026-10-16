@@ -323,6 +323,9 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
 
   const businessLogo = business.logo_url || business.logo;
   const businessCover = business.cover_photo_url || business.cover_image;
+  const cartUrl = (business?.slug || slug)
+    ? `/m/${business?.slug || slug}/cart${tableParam ? `?table=${encodeURIComponent(tableParam)}` : ''}`
+    : `/cart${tableParam ? `?table=${encodeURIComponent(tableParam)}` : ''}`;
 
   return (
     <div
@@ -355,7 +358,7 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
         {totalCount > 0 && (
           <button
             id="menu-top-cart-btn"
-            onClick={() => navigate('/cart')}
+            onClick={() => navigate(cartUrl)}
             style={{
               position: 'absolute',
               top: '12px',
@@ -740,7 +743,7 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
             <Button
               variant="accent"
               size="sm"
-              onClick={() => navigate('/cart')}
+              onClick={() => navigate(cartUrl)}
               icon={ArrowRight}
               style={{
                 borderRadius: '10px',

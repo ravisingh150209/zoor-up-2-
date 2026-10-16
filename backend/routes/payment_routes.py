@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Query, status, Depends, Request
 from backend.database import db_instance, get_collection
-from backend.auth import get_current_user
+from backend.auth import get_current_user, get_optional_current_user
 from backend.models import ROLE_BUSINESS_OWNER, ROLE_CUSTOMER, ROLE_SUPER_ADMIN, ROLE_STAFF
 from backend.rate_limit import enforce_rate_limit
 from backend.razorpay_service import (
@@ -69,16 +69,20 @@ def _generate_upi_uri(vpa: str, biz_name: str, amount: float, note: str, order_r
 
 @router.post("/upi/create")
 @router.post("/create")
-def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, current_user: dict = Depends(get_current_user)):
+def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, current_user: Optional[dict] = Depends(get_optional_current_user)):
     """
     Creates a direct UPI payment intent with dynamic amount.
     Does NOT mark payment as paid simply because intent was created.
     """
-    role = (current_user.get("role") or "").upper()
-    enforce_rate_limit("direct-upi-create-user", current_user.get("id"), 10, 3600)
     enforce_rate_limit("direct-upi-create-ip", request.client.host if request.client else "unknown", 40, 3600)
-    if role not in (ROLE_CUSTOMER, ROLE_BUSINESS_OWNER, ROLE_SUPER_ADMIN):
-        raise HTTPException(status_code=403, detail="Payment initiation is not available for this account.")
+    if current_user:
+        role = (current_user.get("role") or "").upper()
+        enforce_rate_limit("direct-upi-create-user", current_user.get("id"), 10, 3600)
+        if role not in (ROLE_CUSTOMER, ROLE_BUSINESS_OWNER, ROLE_SUPER_ADMIN):
+            raise HTTPException(status_code=403, detail="Payment initiation is not available for this account.")
+    else:
+        role = "GUEST"
+
     if not req.order_id:
         raise HTTPException(status_code=400, detail="An existing order is required to initiate a payment.")
 
@@ -103,12 +107,12 @@ def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, cu
             business_id = biz_lookup["id"]
 
     customer_id = None
-    if role == ROLE_BUSINESS_OWNER:
+    if current_user and role == ROLE_BUSINESS_OWNER:
         biz = businesses_col.find_one({"owner_id": current_user["id"]})
         if not biz or (business_id and business_id != biz.get("id")):
             raise HTTPException(status_code=403, detail="You can only initiate payments for your own business.")
         business_id = biz["id"]
-    elif role == ROLE_CUSTOMER:
+    elif current_user and role == ROLE_CUSTOMER:
         c_col = get_collection("customers")
         customer = (
             (c_col.find_one({"customer_id": current_user.get("customer_id")}) if current_user.get("customer_id") else None) or
@@ -144,12 +148,17 @@ def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, cu
     if not order:
         raise HTTPException(status_code=404, detail="Order not found for this account.")
 
+    if not current_user:
+        if not order.get("is_guest") and order.get("customer_user_id"):
+            raise HTTPException(status_code=401, detail="Authentication required to pay for this account order.")
+        customer_id = order.get("customer_id")
+
     if not business_id:
         business_id = order.get("business_id")
     elif order.get("business_id") != business_id:
         raise HTTPException(status_code=400, detail="Business ID does not match order.")
 
-    if customer_id and order.get("customer_id") != customer_id and order.get("customer_user_id") != current_user.get("id"):
+    if current_user and customer_id and order.get("customer_id") != customer_id and order.get("customer_user_id") != current_user.get("id"):
         raise HTTPException(status_code=403, detail="Order access not allowed.")
 
     # Backend calculates the authoritative amount from the order
@@ -492,7 +501,7 @@ def get_business_payments(
 
 
 @router.get("/upi/{payment_id}")
-def get_payment_status(payment_id: str, current_user: dict = Depends(get_current_user)):
+def get_payment_status(payment_id: str, current_user: Optional[dict] = Depends(get_optional_current_user)):
     clean_id = payment_id.strip()
     payment = (
         db_instance.payments.find_one({"payment_id": clean_id}) or
@@ -502,12 +511,18 @@ def get_payment_status(payment_id: str, current_user: dict = Depends(get_current
     if not payment:
         raise HTTPException(status_code=404, detail="Payment record not found.")
 
-    role = (current_user.get("role") or "").upper()
-    if role != ROLE_SUPER_ADMIN and payment.get("customer_id") != current_user.get("customer_id") and payment.get("business_id") != current_user.get("business_id"):
-        owner_business = get_collection("businesses").find_one({"owner_id": current_user.get("id"), "id": payment.get("business_id")})
-        customer = get_collection("customers").find_one({"user_id": current_user.get("id"), "customer_id": payment.get("customer_id")})
-        if not owner_business and not customer:
-            raise HTTPException(status_code=403, detail="You cannot access this payment.")
+    if not current_user:
+        order_col = get_collection("orders")
+        order = order_col.find_one({"id": payment.get("order_id")}) or order_col.find_one({"order_id": payment.get("order_id")})
+        if order and not order.get("is_guest") and order.get("customer_user_id"):
+            raise HTTPException(status_code=401, detail="Authentication required to view this payment.")
+    else:
+        role = (current_user.get("role") or "").upper()
+        if role != ROLE_SUPER_ADMIN and payment.get("customer_id") != current_user.get("customer_id") and payment.get("business_id") != current_user.get("business_id"):
+            owner_business = get_collection("businesses").find_one({"owner_id": current_user.get("id"), "id": payment.get("business_id")})
+            customer = get_collection("customers").find_one({"user_id": current_user.get("id"), "customer_id": payment.get("customer_id")})
+            if not owner_business and not customer:
+                raise HTTPException(status_code=403, detail="You cannot access this payment.")
 
     return {
         "payment_id": payment.get("payment_id") or payment.get("id"),

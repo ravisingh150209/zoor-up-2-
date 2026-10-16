@@ -104,13 +104,13 @@ export const CartProvider = ({ children }) => {
     const existingIndex = nextItems.findIndex(i => i.id === product.id);
 
     if (existingIndex > -1) {
-      nextItems[existingIndex].quantity += 1;
+      nextItems[existingIndex].quantity = (Number(nextItems[existingIndex].quantity) || 0) + 1;
     } else {
       nextItems.push({
         id: product.id,
         name: product.name,
-        price: product.discount_price || product.price,
-        original_price: product.price,
+        price: Number(product.discount_price || product.price) || 0,
+        original_price: Number(product.price) || 0,
         image: product.image_url || product.image,
         type: product.type || 'product',
         category: product.category || 'General',
@@ -128,8 +128,8 @@ export const CartProvider = ({ children }) => {
     const newItem = {
       id: product.id,
       name: product.name,
-      price: product.discount_price || product.price,
-      original_price: product.price,
+      price: Number(product.discount_price || product.price) || 0,
+      original_price: Number(product.price) || 0,
       image: product.image_url || product.image,
       type: product.type || 'product',
       category: product.category || 'General',
@@ -144,7 +144,7 @@ export const CartProvider = ({ children }) => {
     let nextItems = items
       .map(item => {
         if (item.id === productId) {
-          const qty = item.quantity + delta;
+          const qty = (Number(item.quantity) || 0) + delta;
           return qty > 0 ? { ...item, quantity: qty } : null;
         }
         return item;
@@ -171,8 +171,8 @@ export const CartProvider = ({ children }) => {
     saveCart([], '', '', '', '');
   };
 
-  const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-  const totalCount = items.reduce((sum, i) => sum + i.quantity, 0);
+  const subtotal = items.reduce((sum, i) => sum + (Number(i.price) || 0) * (Number(i.quantity) || 1), 0);
+  const totalCount = items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0);
 
   return (
     <CartContext.Provider
