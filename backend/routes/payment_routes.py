@@ -82,19 +82,60 @@ def create_direct_upi_payment(req: DirectUpiPaymentRequest, request: Request, cu
     if not req.order_id:
         raise HTTPException(status_code=400, detail="An existing order is required to initiate a payment.")
 
-    business_id = req.business_id
+    businesses_col = get_collection("businesses")
+    business_id = (req.business_id or "").strip()
+    if business_id:
+        biz_lookup = (
+            businesses_col.find_one({"id": business_id}) or
+            businesses_col.find_one({"slug": business_id}) or
+            businesses_col.find_one({"business_id": business_id})
+        )
+        if not biz_lookup and hasattr(businesses_col, "find"):
+            try:
+                raw_lower = business_id.lower()
+                for b in businesses_col.find():
+                    if (b.get("id") or "").lower() == raw_lower or (b.get("slug") or "").lower() == raw_lower:
+                        biz_lookup = b
+                        break
+            except Exception:
+                pass
+        if biz_lookup:
+            business_id = biz_lookup["id"]
+
     customer_id = None
     if role == ROLE_BUSINESS_OWNER:
-        biz = get_collection("businesses").find_one({"owner_id": current_user["id"]})
+        biz = businesses_col.find_one({"owner_id": current_user["id"]})
         if not biz or (business_id and business_id != biz.get("id")):
             raise HTTPException(status_code=403, detail="You can only initiate payments for your own business.")
         business_id = biz["id"]
     elif role == ROLE_CUSTOMER:
-        customer = get_collection("customers").find_one({"user_id": current_user["id"]})
-        if not customer:
+        c_col = get_collection("customers")
+        customer = (
+            (c_col.find_one({"customer_id": current_user.get("customer_id")}) if current_user.get("customer_id") else None) or
+            (c_col.find_one({"user_id": current_user.get("id")}) if current_user.get("id") else None) or
+            (c_col.find_one({"id": current_user.get("id")}) if current_user.get("id") else None) or
+            (c_col.find_one({"login_email": current_user.get("email")}) if current_user.get("email") else None) or
+            (c_col.find_one({"email": current_user.get("email")}) if current_user.get("email") else None) or
+            (c_col.find_one({"phone": current_user.get("phone")}) if current_user.get("phone") else None)
+        )
+        customer_id = (
+            (customer or {}).get("customer_id") or
+            (customer or {}).get("id") or
+            current_user.get("customer_id") or
+            current_user.get("id")
+        )
+        if not customer_id:
             raise HTTPException(status_code=403, detail="Customer profile could not be verified.")
-        customer_id = customer.get("customer_id")
-        if business_id and not get_collection("customer_businesses").find_one({"customer_id": customer_id, "business_id": business_id, "status": "active"}):
+
+        cb_col = get_collection("customer_businesses")
+        orders_col = get_collection("orders")
+        is_connected = bool(
+            cb_col.find_one({"customer_id": customer_id, "business_id": business_id, "status": "active"}) or
+            cb_col.find_one({"customer_id": current_user.get("id"), "business_id": business_id, "status": "active"}) or
+            orders_col.find_one({"id": req.order_id, "business_id": business_id}) or
+            orders_col.find_one({"order_id": req.order_id, "business_id": business_id})
+        )
+        if business_id and not is_connected:
             raise HTTPException(status_code=403, detail="This business is not connected to your account.")
 
     order = get_collection("orders").find_one({"id": req.order_id})

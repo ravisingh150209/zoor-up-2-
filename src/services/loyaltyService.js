@@ -30,7 +30,7 @@ const buildLoyaltyError = async (resp, fallbackMessage = 'Unable to load loyalty
   try {
     const payload = await resp.json();
     if (payload?.detail) {
-      detail = payload.detail;
+      detail = typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail);
     }
   } catch (_) {
     // Ignore non-JSON error payloads and preserve the fallback message.
@@ -45,8 +45,15 @@ const buildLoyaltyError = async (resp, fallbackMessage = 'Unable to load loyalty
   if (resp.status === 404) {
     return new Error('Loyalty data for this business was not found.');
   }
+  if (resp.status === 503 || (detail && (
+    detail.includes('Errno 11') ||
+    detail.includes('Resource temporarily unavailable') ||
+    detail.includes('temporarily unavailable')
+  ))) {
+    return new Error('Loyalty service is temporarily updating. Please tap Retry.');
+  }
   if (resp.status >= 500) {
-    return new Error('Server error while loading loyalty data.');
+    return new Error('Loyalty service is temporarily unavailable. Please tap Retry.');
   }
 
   return new Error(detail || fallbackMessage);
@@ -115,22 +122,40 @@ export const loyaltyService = {
       throw new Error('No business selected.');
     }
 
-    const resp = await fetchWithTimeout(`${API_BASE}/api/loyalty/${encodeURIComponent(String(businessId))}`, {
-      headers: {
-        'Authorization': `Bearer ${authToken}`,
-        'Accept': 'application/json'
+    let lastError = null;
+    const maxAttempts = 2;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const resp = await fetchWithTimeout(`${API_BASE}/api/loyalty/${encodeURIComponent(String(businessId))}`, {
+          headers: {
+            'Authorization': `Bearer ${authToken}`,
+            'Accept': 'application/json'
+          }
+        }, 10000);
+
+        if (!resp.ok) {
+          if ((resp.status === 503 || resp.status === 502) && attempt < maxAttempts - 1) {
+            await new Promise(r => setTimeout(r, 500));
+            continue;
+          }
+          throw await buildLoyaltyError(resp, 'Unable to load this business loyalty data.');
+        }
+
+        const data = await resp.json();
+        if (!data || data.success === false) {
+          throw new Error('Unable to load this business loyalty data.');
+        }
+        return data;
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxAttempts - 1 && (err.name === 'AbortError' || err.message?.includes('network'))) {
+          await new Promise(r => setTimeout(r, 500));
+          continue;
+        }
+        break;
       }
-    }, 10000);
-
-    if (!resp.ok) {
-      throw await buildLoyaltyError(resp, 'Unable to load this business loyalty data.');
     }
-
-    const data = await resp.json();
-    if (!data || data.success === false) {
-      throw new Error('Unable to load this business loyalty data.');
-    }
-    return data;
+    throw lastError || new Error('Unable to load this business loyalty data.');
   },
 
   // Configurable Loyalty Levels & Progression

@@ -71,6 +71,7 @@ export const Sidebar = ({ isOpen, onClose, collapsed = false, onToggleCollapse }
     { to: '/business/payments', icon: CreditCard, label: 'Payments & Transactions' },
     { to: '/business/subscription', icon: Crown, label: 'Subscription' },
     { to: '/business/staff', icon: UserCheck, label: 'Staff' },
+    { to: '/business/profile', icon: Store, label: 'Store Profile' },
     { to: '/business/settings', icon: Settings, label: 'Settings' },
   ];
 
@@ -83,6 +84,8 @@ export const Sidebar = ({ isOpen, onClose, collapsed = false, onToggleCollapse }
 
   const customerLinks = [
     { to: '/customer', icon: Home, label: 'Home', exact: true },
+    { to: '/customer/businesses', icon: Store, label: 'Stores & Discovery' },
+    { to: '/customer/orders', icon: ShoppingBag, label: 'My Orders' },
     { to: '/customer/loyalty', icon: Award, label: 'Rewards' },
     { to: '/customer/offers', icon: Tag, label: 'Offers' },
     { to: '/customer/scan-qr', icon: Scan, label: 'Scan QR' },

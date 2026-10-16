@@ -75,17 +75,32 @@ def _validate_coupon_logic(business_id: str, code: str, subtotal_amount: Decimal
             v = coupons_col.find_one({"store_id": business_id, "code": clean_code})
             coll_name = "coupons"
 
-    # 3. Check customer_vouchers if personalized
-    if not v and customer_id:
+    # 3. Check customer_vouchers if personalized or claimed loyalty reward
+    if not v:
         cv_col = get_collection("customer_vouchers")
-        v = cv_col.find_one({"business_id": business_id, "customer_id": customer_id, "code": clean_code})
-        coll_name = "customer_vouchers"
+        v_cand = cv_col.find_one({"code": clean_code})
+        if v_cand:
+            v_cust_id = v_cand.get("customer_id")
+            v_biz_id = v_cand.get("business_id")
+            # Verify customer ownership if customer_id is provided
+            cust_matches = True
+            if customer_id and v_cust_id:
+                cust_matches = (v_cust_id == customer_id or str(v_cust_id).endswith(str(customer_id)[-8:]))
+            if cust_matches and (not v_biz_id or v_biz_id in (business_id, "default")):
+                v = v_cand
+                coll_name = "customer_vouchers"
 
     if not v:
         raise HTTPException(status_code=400, detail="Invalid coupon code or not applicable to this store.")
 
     # Check active status
-    is_active = v.get("is_active", True) if coll_name == "coupons" else (str(v.get("status", "ACTIVE")).upper() in ("ACTIVE", "AVAILABLE"))
+    status_str = str(v.get("status", "ACTIVE")).upper()
+    if status_str in ("REDEEMED", "USED"):
+        raise HTTPException(status_code=400, detail="This voucher has already been redeemed.")
+    if status_str == "EXPIRED":
+        raise HTTPException(status_code=400, detail="This voucher has expired.")
+
+    is_active = v.get("is_active", True) if coll_name == "coupons" else (status_str in ("ACTIVE", "AVAILABLE"))
     if not is_active:
         raise HTTPException(status_code=400, detail="This coupon is currently inactive.")
 
@@ -133,6 +148,23 @@ def _validate_coupon_logic(business_id: str, code: str, subtotal_amount: Decimal
     # Calculate discount
     discount_type = str(v.get("discount_type", "PERCENTAGE")).upper()
     discount_value = Decimal(str(v.get("discount_value", 0)))
+
+    # Fallback discount derivation for claimed customer rewards without explicit discount_value
+    if coll_name == "customer_vouchers" and discount_value <= Decimal("0"):
+        v_title = str(v.get("title", ""))
+        if "100" in v_title:
+            discount_type = "FIXED"
+            discount_value = Decimal("100.0")
+        elif "20%" in v_title:
+            discount_type = "PERCENTAGE"
+            discount_value = Decimal("20.0")
+        elif "500" in v_title or "MEAL" in v_title.upper():
+            discount_type = "FIXED"
+            discount_value = Decimal("250.0")
+        else:
+            discount_type = "FIXED"
+            discount_value = Decimal("50.0")
+
     if discount_type in ("PERCENTAGE", "PERCENT"):
         discount_amount = (subtotal_amount * discount_value) / Decimal("100")
         max_discount = Decimal(str(v.get("max_discount") or v.get("maximum_discount") or 0))
@@ -147,10 +179,20 @@ def _validate_coupon_logic(business_id: str, code: str, subtotal_amount: Decimal
 
 def _customer_identity(current_user: dict) -> tuple[str, dict]:
     customers = get_collection("customers")
-    customer = customers.find_one({"user_id": current_user["id"]})
-    if not customer and current_user.get("customer_id"):
-        customer = customers.find_one({"customer_id": current_user["customer_id"]})
-    customer_id = (customer or {}).get("customer_id") or current_user.get("customer_id")
+    customer = (
+        (customers.find_one({"customer_id": current_user.get("customer_id")}) if current_user.get("customer_id") else None) or
+        (customers.find_one({"user_id": current_user["id"]}) if current_user.get("id") else None) or
+        (customers.find_one({"id": current_user["id"]}) if current_user.get("id") else None) or
+        (customers.find_one({"login_email": current_user.get("email")}) if current_user.get("email") else None) or
+        (customers.find_one({"email": current_user.get("email")}) if current_user.get("email") else None) or
+        (customers.find_one({"phone": current_user.get("phone")}) if current_user.get("phone") else None)
+    )
+    customer_id = (
+        (customer or {}).get("customer_id") or
+        (customer or {}).get("id") or
+        current_user.get("customer_id") or
+        current_user.get("id")
+    )
     if not customer_id:
         raise HTTPException(status_code=403, detail="Customer profile could not be verified.")
     return customer_id, customer or {}
@@ -190,6 +232,11 @@ def _normalize_order(order: dict) -> dict:
     if not isinstance(order, dict):
         return order
     meta = order.get("metadata") or {}
+    if meta.get("order_id"):
+        order["order_id"] = meta["order_id"]
+        order["id"] = meta["order_id"]
+    elif order.get("order_id") and str(order["order_id"]).startswith("ORD-"):
+        order["id"] = order["order_id"]
     if not order.get("payment_method") and meta.get("payment_method"):
         order["payment_method"] = meta.get("payment_method")
     if not order.get("customer_id") and meta.get("customer_id"):
@@ -198,6 +245,119 @@ def _normalize_order(order: dict) -> dict:
         order["customer_name"] = meta.get("customer_name")
     if not order.get("customer_phone") and meta.get("customer_phone"):
         order["customer_phone"] = meta.get("customer_phone")
+    if order.get("payment_status"):
+        order["payment_status"] = str(order["payment_status"]).upper()
+    if order.get("status"):
+        order["status"] = str(order["status"]).upper()
+
+    # 1. Parse stringified items if needed
+    raw_items = order.get("items")
+    if isinstance(raw_items, str):
+        try:
+            raw_items = json.loads(raw_items)
+            order["items"] = raw_items
+        except Exception:
+            raw_items = []
+            order["items"] = []
+
+    # 2. If items is empty or None, look up in order_items table using order ID
+    order_id = order.get("id") or order.get("order_id")
+    order_uuid = order.get("_db_uuid") or order.get("id")
+    if not raw_items and order_id:
+        try:
+            oi_col = get_collection("order_items")
+            oi_records = oi_col.find({"order_id": order_id})
+            if not oi_records and order_uuid and order_uuid != order_id:
+                oi_records = oi_col.find({"order_id": order_uuid})
+            if oi_records:
+                raw_items = [
+                    {
+                        "product_id": r.get("product_id") or r.get("id"),
+                        "id": r.get("product_id") or r.get("id"),
+                        "name": r.get("product_name") or r.get("name") or "Product",
+                        "product_name": r.get("product_name") or r.get("name") or "Product",
+                        "quantity": int(r.get("quantity", 1)),
+                        "unit_price": float(r.get("unit_price", 0.0)),
+                        "price": float(r.get("unit_price", 0.0)),
+                        "line_total": float(r.get("total_price", float(r.get("unit_price", 0.0)) * int(r.get("quantity", 1)))),
+                        "subtotal": float(r.get("total_price", float(r.get("unit_price", 0.0)) * int(r.get("quantity", 1)))),
+                    }
+                    for r in oi_records
+                ]
+                order["items"] = raw_items
+        except Exception:
+            pass
+
+    # 3. If any item is missing product name, fetch from products collection
+    if isinstance(raw_items, list) and raw_items:
+        missing_ids = []
+        for it in raw_items:
+            if isinstance(it, dict):
+                pid = it.get("product_id") or it.get("id")
+                if pid and (not it.get("name") or it.get("name") == "Product" or not it.get("price")):
+                    missing_ids.append(pid)
+
+        found_products = {}
+        if missing_ids:
+            try:
+                prod_col = get_collection("products")
+                for p in prod_col.find({"id": {"$in": missing_ids}}):
+                    if p.get("id"):
+                        found_products[p["id"]] = p
+                    if p.get("_db_uuid"):
+                        found_products[p["_db_uuid"]] = p
+                    if isinstance(p.get("metadata"), dict) and p["metadata"].get("original_id"):
+                        found_products[p["metadata"]["original_id"]] = p
+            except Exception:
+                pass
+
+        normalized_items = []
+        for it in raw_items:
+            if not isinstance(it, dict):
+                continue
+            item_copy = dict(it)
+            pid = item_copy.get("product_id") or item_copy.get("id")
+            db_uuid_key = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(pid))) if pid else None
+            prod = found_products.get(pid) or (found_products.get(db_uuid_key) if db_uuid_key else None)
+
+            pname = item_copy.get("name") or item_copy.get("product_name")
+            if (not pname or pname == "Product") and prod:
+                pname = prod.get("name") or "Product"
+            if not pname:
+                pname = "Item"
+            item_copy["name"] = pname
+            item_copy["product_name"] = pname
+
+            qty = int(item_copy.get("quantity") or 1)
+            item_copy["quantity"] = qty
+
+            uprice = item_copy.get("unit_price")
+            if uprice is None:
+                uprice = item_copy.get("price")
+            if (uprice is None or float(uprice) == 0.0) and prod:
+                uprice = prod.get("discount_price") or prod.get("price", 0.0)
+            uprice = float(uprice or 0.0)
+            item_copy["unit_price"] = uprice
+            item_copy["price"] = uprice
+
+            ltotal = item_copy.get("line_total")
+            if ltotal is None:
+                ltotal = item_copy.get("subtotal")
+            if ltotal is None:
+                ltotal = uprice * qty
+            ltotal = float(ltotal)
+            item_copy["line_total"] = ltotal
+            item_copy["subtotal"] = ltotal
+
+            normalized_items.append(item_copy)
+
+        order["items"] = normalized_items
+
+    if not order.get("total") and order.get("total_amount"):
+        order["total"] = order["total_amount"]
+    elif not order.get("total_amount") and order.get("total"):
+        order["total_amount"] = order["total"]
+
     return order
 
 
@@ -216,10 +376,28 @@ def create_order(
     client_ip = http_request.client.host if http_request.client else "unknown"
     enforce_rate_limit("order-create-ip", client_ip, 60, 3600)
     customer_id, customer = _customer_identity(current_user)
-    business_id = request.business_id.strip()
-    business = get_collection("businesses").find_one({"id": business_id})
+    raw_business_id = request.business_id.strip()
+    businesses_col = get_collection("businesses")
+    business = (
+        businesses_col.find_one({"id": raw_business_id}) or
+        businesses_col.find_one({"slug": raw_business_id}) or
+        businesses_col.find_one({"business_id": raw_business_id})
+    )
+    if not business and hasattr(businesses_col, "find"):
+        try:
+            raw_lower = raw_business_id.lower()
+            for b in businesses_col.find():
+                if (b.get("id") or "").lower() == raw_lower or (b.get("slug") or "").lower() == raw_lower:
+                    business = b
+                    break
+        except Exception:
+            pass
+
     if not business or (business.get("status") and str(business["status"]).upper() not in {"ACTIVE", "APPROVED"}):
         raise HTTPException(status_code=404, detail="Business not found or unavailable.")
+
+    # Canonical internal business ID for products, tables, connections, and orders
+    business_id = business["id"]
 
     cb_col = get_collection("customer_businesses")
     connection = cb_col.find_one({
@@ -319,12 +497,13 @@ def create_order(
 
     table_name = request.table_number.strip() if request.table_number else None
     if request.table_id:
-        table = get_collection("tables").find_one({
-            "id": request.table_id,
-            "business_id": business_id,
-            "is_active": True,
-        })
-        if not table:
+        tables_col = get_collection("tables")
+        table = (
+            tables_col.find_one({"id": request.table_id, "business_id": business_id}) or
+            tables_col.find_one({"table_number": request.table_id, "business_id": business_id}) or
+            tables_col.find_one({"name": request.table_id, "business_id": business_id})
+        )
+        if not table or (table.get("is_active") is False):
             raise HTTPException(status_code=400, detail="Selected table is not available for this business.")
         table_name = table.get("name") or table.get("table_number") or table_name
 
@@ -343,7 +522,10 @@ def create_order(
     if prior:
         if prior.get("request_fingerprint") != fingerprint:
             raise HTTPException(status_code=409, detail="This order attempt key was already used for a different order.")
-        return prior
+        norm_prior = _normalize_order(dict(prior))
+        if norm_prior.get("order_id"):
+            norm_prior["id"] = norm_prior["order_id"]
+        return norm_prior
 
     now = _now_iso()
     order_id = f"ORD-{datetime.now(timezone.utc).year}-{uuid.uuid4().hex[:12].upper()}"
@@ -392,8 +574,19 @@ def create_order(
         try:
             col = get_collection(coupon_col_name)
             rec_id = coupon_rec.get("id") or coupon_rec.get("_id")
-            inc_field = "used_count" if coupon_col_name in ("coupons", "customer_vouchers") else "total_claimed"
-            col.update_one({"id": rec_id}, {"$inc": {inc_field: 1}})
+            if coupon_col_name == "customer_vouchers":
+                col.update_one(
+                    {"id": rec_id} if "id" in coupon_rec else {"_id": rec_id},
+                    {"$set": {
+                        "status": "REDEEMED",
+                        "redeemed_at": now,
+                        "used_at": now,
+                        "order_id": order_id
+                    }, "$inc": {"used_count": 1}}
+                )
+            else:
+                inc_field = "used_count" if coupon_col_name == "coupons" else "total_claimed"
+                col.update_one({"id": rec_id}, {"$inc": {inc_field: 1}})
             usage_col = get_collection("coupon_usage")
             usage_col.insert_one({
                 "id": f"cu_{uuid.uuid4().hex[:12]}",
@@ -478,6 +671,7 @@ def validate_coupon_endpoint(req: CouponValidateRequest):
 
 
 @router.get("/orders/my")
+@router.get("/customer/orders")
 def get_my_orders(
     business_id: Optional[str] = Query(None),
     current_user: dict = Depends(require_role([ROLE_CUSTOMER]))
@@ -485,38 +679,32 @@ def get_my_orders(
     customer_id, customer = _customer_identity(current_user)
     user_id = current_user.get("id")
 
-    # Use the canonical customer UUID (customers.id) for consistent order lookups
-    # Orders store customer_id as UUID (customers.id), not ZUP-CUS-... string
-    canonical_customer_uuid = customer.get("id") if customer else None
-    if not canonical_customer_uuid:
-        # Fallback: look up by customer_id (ZUP-CUS-...)
-        customers_col = get_collection("customers")
-        cus_rec = customers_col.find_one({"customer_id": customer_id})
-        if cus_rec:
-            canonical_customer_uuid = cus_rec.get("id")
-
-    query_customer_id = canonical_customer_uuid or customer_id
-
-    cb_col = get_collection("customer_businesses")
-    all_conn = cb_col.find({"status": "active"}) or []
-    # Match customer_businesses using the same canonical identifier used for orders
-    allowed_biz_ids = {
-        c.get("business_id") for c in all_conn
-        if c.get("customer_id") == query_customer_id
-    }
+    candidate_ids = list(filter(None, {
+        customer_id,
+        customer.get("id") if customer else None,
+        customer.get("customer_id") if customer else None,
+        user_id,
+        current_user.get("id"),
+        current_user.get("customer_id")
+    }))
 
     orders_col = get_collection("orders")
-    records = orders_col.find({"customer_id": query_customer_id}) or []
-    seen_ids = {r.get("id") for r in records}
+    records = list(orders_col.find({"customer_id": {"$in": candidate_ids}}))
+    user_orders = list(orders_col.find({"customer_user_id": user_id})) if user_id else []
+
+    seen_ids = set()
+    combined_orders = []
+    for r in records + user_orders:
+        oid = r.get("id") or r.get("order_id")
+        if oid and oid not in seen_ids:
+            seen_ids.add(oid)
+            combined_orders.append(r)
 
     if business_id:
         clean_biz = business_id.strip()
-        records = [r for r in records if r.get("business_id") == clean_biz]
+        combined_orders = [r for r in combined_orders if r.get("business_id") == clean_biz]
 
-    if allowed_biz_ids:
-        records = [r for r in records if r.get("business_id") in allowed_biz_ids]
-
-    return _sorted_orders(records)
+    return _sorted_orders(combined_orders)
 
 
 
@@ -561,9 +749,23 @@ def get_business_orders(
     records = get_collection("orders").find(query)
     if search:
         term = search.casefold()
-        records = [record for record in records if term in str(record.get("id", "")).casefold()
-                   or term in str(record.get("customer_name", "")).casefold()
-                   or term in str(record.get("customer_phone", "")).casefold()]
+        filtered = []
+        for record in records:
+            matched = (
+                term in str(record.get("id", "")).casefold()
+                or term in str(record.get("customer_name", "")).casefold()
+                or term in str(record.get("customer_phone", "")).casefold()
+            )
+            if not matched:
+                items = record.get("items") or []
+                if isinstance(items, list):
+                    for it in items:
+                        if isinstance(it, dict) and term in str(it.get("name") or it.get("product_name") or "").casefold():
+                            matched = True
+                            break
+            if matched:
+                filtered.append(record)
+        records = filtered
     return _sorted_orders(records)
 
 
@@ -591,7 +793,8 @@ def update_business_order_status(
         raise HTTPException(status_code=400, detail="This order status transition is not allowed.")
     updates = {"status": request.status, "updated_at": _now_iso()}
     orders.update_one({"id": order_id, "business_id": business_id}, {"$set": updates})
-    return orders.find_one({"id": order_id, "business_id": business_id})
+    updated = orders.find_one({"id": order_id, "business_id": business_id})
+    return _normalize_order(updated)
 
 
 @router.get("/admin/orders/summary")

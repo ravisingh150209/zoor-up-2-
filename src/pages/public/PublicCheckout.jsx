@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import confetti from 'canvas-confetti';
 
 import { getErrorMessage } from '../../utils/errorUtils';
 import {
@@ -18,49 +17,36 @@ import {
   Utensils,
   Package,
   Smartphone,
-  Lock,
-  CreditCard,
-  Globe,
   Check,
   QrCode,
   Copy,
   ExternalLink,
   RefreshCw,
   Loader2,
-  Sparkles,
+  Plus,
+  Minus,
+  Trash2,
 } from 'lucide-react';
 import { useCart } from '../../context/CartContext';
-import { billingService } from '../../services/billingService';
 import { orderService } from '../../services/orderService';
 import { businessService } from '../../services/businessService';
 import { loyaltyService } from '../../services/loyaltyService';
 import { tableBookingService } from '../../services/tableBookingService';
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
-import { Badge } from '../../components/ui/Badge';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { notificationService, NOTIFICATION_TYPES } from '../../services/notificationService';
 
-const loadRazorpayScript = () => {
-  return new Promise((resolve, reject) => {
-    if (window.Razorpay) {
-      resolve(true);
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-    script.onload = () => resolve(true);
-    script.onerror = () => reject(new Error('Failed to load secure UPI checkout. Please check your internet connection.'));
-    document.body.appendChild(script);
-  });
-};
-
 export const PublicCheckout = () => {
-  const { items, subtotal, clearCart, businessSlug, businessId } = useCart();
-  const { user } = useAuth();
+  const { items, subtotal, totalCount, updateQuantity, removeItem, clearCart, businessSlug, businessId, tableId: cartTableId } = useCart();
+  const [searchParams] = useSearchParams();
+  const { user, loading: authLoading } = useAuth();
   const { addToast } = useToast();
   const navigate = useNavigate();
+
+  const tableFromUrl = searchParams.get('table');
+  const preselectedTable = tableFromUrl || cartTableId || '';
 
   const [business, setBusiness] = useState(null);
   const [upiConfig, setUpiConfig] = useState({ upi_id: '', upi_name: '', upi_notes: '', upi_enabled: false });
@@ -74,60 +60,94 @@ export const PublicCheckout = () => {
   const placingRef = useRef(false);
   const [copiedUpi, setCopiedUpi] = useState(false);
 
-  // Automatic Payment States:
+  // Synchronize customer details once authenticated session resolves
+  useEffect(() => {
+    if (user?.name && !customerName) setCustomerName(user.name);
+    if (user?.phone && !customerPhone) setCustomerPhone(user.phone);
+  }, [user]);
+
+  // Payment states:
   // 'IDLE' | 'AWAITING_PAYMENT' | 'VERIFYING_PAYMENT' | 'PAYMENT_SUCCESSFUL' | 'PAYMENT_FAILED' | 'PAYMENT_PENDING'
   const [paymentState, setPaymentState] = useState('IDLE');
   const [paymentError, setPaymentError] = useState('');
   const [activeOrderRef, setActiveOrderRef] = useState(null);
-  const [activeRzpOrder, setActiveRzpOrder] = useState(null);
 
   // Dining option & Table selection state
   const [orderType, setOrderType] = useState('DINE_IN'); // 'DINE_IN' | 'TAKEAWAY'
   const [tables, setTables] = useState([]);
   const [selectedTableId, setSelectedTableId] = useState('');
   const [selectedTableNumber, setSelectedTableNumber] = useState('');
-  const [customTableNumber, setCustomTableNumber] = useState('');
+  const [customTableNumber, setCustomTableNumber] = useState(preselectedTable);
+
+  // Stable business identifier: avoid triggering on items quantity updates
+  const targetBizIdentifier = businessId || items[0]?.business_id || businessSlug;
 
   useEffect(() => {
-    loadBusiness();
-  }, [businessSlug, businessId, items]);
+    if (targetBizIdentifier) {
+      loadBusiness(targetBizIdentifier);
+    }
+  }, [targetBizIdentifier]);
 
-  const loadBusiness = async () => {
+  const loadBusiness = async (bizIdentifier) => {
+    const targetId = bizIdentifier || targetBizIdentifier;
+    if (!targetId) {
+      setLoadingUpi(false);
+      return;
+    }
+
+    // Do not reload or re-spin if store is already loaded
+    if (business && (business.id === targetId || business.slug === targetId)) {
+      setLoadingUpi(false);
+      return;
+    }
+
     try {
       setLoadingUpi(true);
-      let b = null;
-      const targetBizIdentifier = businessId || items[0]?.business_id || businessSlug;
-      if (targetBizIdentifier) {
-        b = await businessService.getBusinessBySlug(targetBizIdentifier);
-        if (!b) {
-          b = await businessService.getBusiness(targetBizIdentifier);
-        }
+      let b = await businessService.getBusinessBySlug(targetId);
+      if (!b) {
+        b = await businessService.getBusiness(targetId);
       }
       if (b) {
         setBusiness(b);
         loadBusinessTables(b.id);
 
+        // Read direct UPI properties already present on the business object
+        const directUpiId = (b.upi_id || b.payment_settings?.upi_id || b.metadata?.upi_id || b.vpa || '').trim();
+        const directUpiName = (b.upi_name || b.metadata?.upi_name || b.name || 'Store').trim();
+        const directUpiNotes = (b.upi_notes || b.metadata?.upi_notes || 'ZOOR UP Store Payment').trim();
+        const directUpiEnabled = Boolean(directUpiId && b.upi_enabled !== false);
+
+        let finalUpiId = directUpiId;
+        let finalUpiName = directUpiName;
+        let finalUpiNotes = directUpiNotes;
+        let finalUpiEnabled = directUpiEnabled;
+
         // Load authoritative UPI configuration strictly for this business
         try {
           const upiData = await businessService.getPublicBusinessUpi(b.id);
-          const hasUpi = Boolean(upiData?.upi_id && upiData?.upi_enabled !== false);
-          setUpiConfig({
-            upi_id: (upiData?.upi_id || '').trim(),
-            upi_name: (upiData?.upi_name || b.name || 'Store').trim(),
-            upi_notes: (upiData?.upi_notes || 'ZOOR UP Store Payment').trim(),
-            upi_enabled: hasUpi,
-          });
-
-          if (hasUpi) {
-            setPaymentMethod('UPI');
-          } else {
-            setPaymentMethod('CASH');
+          if (upiData?.upi_id) {
+            finalUpiId = (upiData.upi_id || '').trim();
+            finalUpiName = (upiData.upi_name || b.name || 'Store').trim();
+            finalUpiNotes = (upiData.upi_notes || 'ZOOR UP Store Payment').trim();
+            finalUpiEnabled = Boolean(finalUpiId && upiData.upi_enabled !== false);
           }
         } catch (upiErr) {
-          console.warn('Could not load store UPI configuration:', upiErr);
-          setUpiConfig({ upi_id: '', upi_name: b.name || 'Store', upi_notes: '', upi_enabled: false });
-          setPaymentMethod('CASH');
+          console.warn('Could not load authoritative store UPI endpoint, used profile settings:', upiErr);
         }
+
+        setUpiConfig({
+          upi_id: finalUpiId,
+          upi_name: finalUpiName,
+          upi_notes: finalUpiNotes,
+          upi_enabled: finalUpiEnabled,
+        });
+
+        // Safe initial payment method without overwriting an existing user selection
+        setPaymentMethod((prev) => {
+          if (!finalUpiEnabled) return 'CASH';
+          if (prev) return prev;
+          return 'UPI';
+        });
       }
     } catch (e) {
       console.error('Error loading checkout business:', e);
@@ -142,12 +162,20 @@ export const PublicCheckout = () => {
       const bizTables = await tableBookingService.getTables(bizId, true);
       setTables(bizTables || []);
       if (bizTables && bizTables.length > 0) {
-        setSelectedTableId(bizTables[0].id);
-        setSelectedTableNumber(bizTables[0].table_number);
+        const found = preselectedTable
+          ? bizTables.find((t) => t.id === preselectedTable || t.table_number === preselectedTable || t.name === preselectedTable)
+          : null;
+        setSelectedTableId((prev) => prev || found?.id || bizTables[0].id);
+        setSelectedTableNumber((prev) => prev || found?.table_number || found?.name || bizTables[0].table_number);
+      } else if (preselectedTable) {
+        setCustomTableNumber((prev) => prev || preselectedTable);
       }
     } catch (e) {
-      console.error('Error loading tables for checkout:', e);
-      addToast(getErrorMessage(e) || 'Failed to load table information', 'error');
+      console.warn('Optional dining tables could not be loaded for checkout:', e);
+      setTables([]);
+      if (preselectedTable) {
+        setCustomTableNumber((prev) => prev || preselectedTable);
+      }
     }
   };
 
@@ -165,7 +193,9 @@ export const PublicCheckout = () => {
     return encodeURIComponent(trimmed);
   };
 
-  const orderRef = cartBusinessId ? `ORD-${Date.now().toString(36).toUpperCase()}` : 'ORD';
+  const effectiveBusinessId = businessId || business?.id || items[0]?.business_id || businessSlug;
+  const previewOrderRef = effectiveBusinessId ? `ORD-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}` : 'ORD';
+  const orderRef = activeOrderRef || previewOrderRef;
 
   const storeUpiUri = upiConfig?.upi_id
     ? `upi://pay?pa=${formatUpiVpa(upiConfig.upi_id)}&pn=${encodeURIComponent(upiConfig.upi_name || business?.name || 'Store')}&am=${grandTotal.toFixed(2)}&cu=INR&tn=${encodeURIComponent(upiConfig.upi_notes || `Order at ${business?.name || 'Store'}`)}&tr=${encodeURIComponent(orderRef)}`
@@ -194,103 +224,19 @@ export const PublicCheckout = () => {
     }
   };
 
-  const launchRazorpayUpiCheckout = async (orderRef, rzpOrder) => {
-    setPaymentState('AWAITING_PAYMENT');
-    setPaymentError('');
-    await loadRazorpayScript();
-
-    return new Promise((resolve) => {
-      const options = {
-        key: rzpOrder.razorpay_key_id,
-        amount: rzpOrder.amount_paise,
-        currency: 'INR',
-        name: business?.name || 'Store',
-        description: `Order #${orderRef}`,
-        order_id: rzpOrder.razorpay_order_id,
-        prefill: {
-          name: customerName.trim(),
-          contact: customerPhone.trim(),
-        },
-        theme: {
-          color: '#059669',
-        },
-        config: {
-          display: {
-            blocks: {
-              upi: {
-                name: 'Pay via UPI',
-                instruments: [{ method: 'upi' }],
-              },
-              other: {
-                name: 'Other Modes (Test Mode)',
-                instruments: [{ method: 'card' }, { method: 'netbanking' }, { method: 'wallet' }],
-              },
-            },
-            sequence: ['block.upi', 'block.other'],
-            preferences: {
-              show_default_blocks: true,
-            },
-          },
-        },
-        handler: async (response) => {
-          setPaymentState('VERIFYING_PAYMENT');
-          try {
-            const verifyRes = await orderService.verifyRazorpayPayment({
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature,
-              order_id: orderRef,
-            });
-
-            if (verifyRes?.success && (verifyRes?.status === 'paid' || verifyRes?.verified)) {
-              setPaymentState('PAYMENT_SUCCESSFUL');
-              try {
-                confetti({ particleCount: 90, spread: 70, origin: { y: 0.6 } });
-              } catch (_) {}
-              addToast('Payment automatically verified & confirmed!', 'success');
-              clearCart();
-              setTimeout(() => {
-                navigate(`/payment-status/${orderRef}`);
-              }, 1200);
-              resolve(true);
-            } else {
-              throw new Error(verifyRes?.message || 'Payment signature verification failed.');
-            }
-          } catch (verifyErr) {
-            setPaymentState('PAYMENT_FAILED');
-            const msg = getErrorMessage(verifyErr) || 'Payment signature verification failed.';
-            setPaymentError(msg);
-            addToast(msg, 'error');
-            resolve(false);
-          }
-        },
-        modal: {
-          ondismiss: () => {
-            setPaymentState('PAYMENT_PENDING');
-            orderService.recordRazorpayPaymentFailure({
-              razorpay_order_id: rzpOrder.razorpay_order_id,
-              error_code: 'MODAL_DISMISSED',
-              error_description: 'Customer dismissed UPI checkout modal before completing transaction.',
-            }).catch(() => {});
-            addToast('UPI checkout closed. Order remains pending verification.', 'info');
-            resolve(false);
-          },
-        },
-      };
-
-      const rzpInstance = new window.Razorpay(options);
-      rzpInstance.open();
-    });
-  };
-
   const handlePlaceOrder = async () => {
     if (placingRef.current) return;
-    if ((user?.role || '').toUpperCase() !== 'CUSTOMER') {
-      addToast('Please sign in as a customer before placing an order.', 'error');
-      navigate('/login/customer');
+    if (authLoading) {
+      addToast('Verifying session, please try again in a moment...', 'info');
       return;
     }
-    if (!business?.id) {
+    if ((user?.role || '').toUpperCase() !== 'CUSTOMER') {
+      addToast('Please sign in to your customer pass to complete your order.', 'info');
+      navigate('/login/customer?redirect=/checkout');
+      return;
+    }
+    const targetBizId = business?.id || businessId || items[0]?.business_id || businessSlug;
+    if (!targetBizId) {
       addToast('The selected business could not be verified.', 'error');
       return;
     }
@@ -317,11 +263,7 @@ export const PublicCheckout = () => {
         finalTableId = found?.id || selectedTableId;
         finalTableNumber = found?.table_number || selectedTableNumber;
       } else {
-        if (!customTableNumber.trim()) {
-          addToast('Please enter your table number', 'error');
-          return;
-        }
-        finalTableNumber = customTableNumber.trim();
+        finalTableNumber = customTableNumber.trim() || preselectedTable || 'Counter / Open Seating';
       }
     }
 
@@ -330,7 +272,7 @@ export const PublicCheckout = () => {
     setPaymentError('');
     try {
       const order = await orderService.createOrder({
-        business_id: business.id,
+        business_id: targetBizId,
         items,
         order_type: orderType,
         table_id: finalTableId,
@@ -351,7 +293,7 @@ export const PublicCheckout = () => {
           business_id: order.business_id,
           type: NOTIFICATION_TYPES.PAYMENT_PENDING,
           title: `New ${paymentMethod} Order: ₹${grandTotal} (${orderType === 'DINE_IN' ? `Table ${finalTableNumber}` : 'Takeaway'})`,
-          message: `${customerName.trim()} placed order ${orderRef} worth ₹${grandTotal}. Verification in progress.`,
+          message: `${customerName.trim()} placed order ${orderRef} worth ₹${grandTotal}.`,
           entity_id: orderRef,
           action_url: '/business/orders',
         }).catch(() => {});
@@ -359,14 +301,23 @@ export const PublicCheckout = () => {
 
       if (paymentMethod === 'UPI') {
         try {
-          // Initialize authoritative Razorpay order for instant automated UPI verification
-          const rzpOrder = await orderService.createRazorpayOrder(orderRef, business.id);
-          setActiveRzpOrder(rzpOrder);
-          await launchRazorpayUpiCheckout(orderRef, rzpOrder);
+          // Initialize direct business-specific UPI payment intent on backend
+          const upiPayment = await orderService.createUpiPayment(orderRef, targetBizId);
+          const paymentIntentUri = upiPayment?.upi_uri || storeUpiUri;
+
+          // On mobile devices, trigger direct UPI app launching
+          if (paymentIntentUri && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+            try {
+              window.location.href = paymentIntentUri;
+            } catch (_) {}
+          }
+
+          clearCart();
+          addToast('Order placed! Complete UPI payment in your UPI app.', 'success');
+          navigate(`/payment-status/${orderRef}`);
         } catch (upiErr) {
-          console.warn('Razorpay UPI auto-initiation note:', upiErr);
-          setPaymentState('PAYMENT_PENDING');
-          setPaymentError(getErrorMessage(upiErr) || 'Could not launch automated UPI checkout.');
+          console.warn('Direct UPI payment registration note:', upiErr);
+          clearCart();
           addToast('Order placed! Redirecting to payment status...', 'info');
           navigate(`/payment-status/${orderRef}`);
         }
@@ -440,6 +391,57 @@ export const PublicCheckout = () => {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        {/* Customer Account Session Status */}
+        {!user || (user?.role || '').toUpperCase() !== 'CUSTOMER' ? (
+          <div
+            id="checkout-auth-banner"
+            style={{
+              padding: '0.85rem 1rem',
+              background: '#EFF6FF',
+              border: '1.5px solid #BFDBFE',
+              borderRadius: '16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.75rem',
+            }}
+          >
+            <div>
+              <strong style={{ fontSize: '0.88rem', color: '#1E40AF', display: 'block' }}>
+                Customer Account Required to Place Orders
+              </strong>
+              <p style={{ margin: 0, fontSize: '0.78rem', color: '#3B82F6' }}>
+                Sign in to your customer pass to earn rewards and track this order.
+              </p>
+            </div>
+            <Link
+              to="/login/customer?redirect=/checkout"
+              className="btn btn-sm btn-primary"
+              style={{ flexShrink: 0, fontSize: '0.8rem', padding: '0.4rem 0.85rem' }}
+            >
+              Sign In
+            </Link>
+          </div>
+        ) : (
+          <div
+            id="checkout-signed-in-badge"
+            style={{
+              padding: '0.65rem 0.85rem',
+              background: '#F0FDF4',
+              border: '1px solid #BBF7D0',
+              borderRadius: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              fontSize: '0.82rem',
+              color: '#166534',
+            }}
+          >
+            <Check size={16} color="#16A34A" />
+            <span>Signed in as <strong>{user.name || user.phone}</strong> (Customer Pass)</span>
+          </div>
+        )}
+
         {/* Customer Details */}
         <div
           className="card"
@@ -586,28 +588,165 @@ export const PublicCheckout = () => {
           <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.75rem' }}>
             Selected Items ({items.length})
           </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             {items.map((i) => (
               <div
                 key={i.id}
                 style={{
                   display: 'flex',
-                  justifyContent: 'space-between',
                   alignItems: 'center',
+                  gap: '0.75rem',
                   fontSize: '0.875rem',
                   borderBottom: '1px solid #F1F5F9',
-                  paddingBottom: '0.5rem',
+                  paddingBottom: '0.65rem',
                 }}
               >
-                <div>
-                  <strong style={{ color: '#1A2B49' }}>{i.name}</strong>
+                {i.image ? (
+                  <img
+                    src={i.image}
+                    alt={i.name}
+                    style={{
+                      width: '48px',
+                      height: '48px',
+                      borderRadius: '10px',
+                      objectFit: 'cover',
+                      flexShrink: 0,
+                    }}
+                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: '48px',
+                      height: '48px',
+                      borderRadius: '10px',
+                      background: '#FEF3C7',
+                      color: '#D97706',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <ShoppingBag size={20} />
+                  </div>
+                )}
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <strong style={{ color: '#1A2B49', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {i.name}
+                  </strong>
                   <span style={{ color: '#64748B', display: 'block', fontSize: '0.75rem' }}>
-                    Qty: {i.quantity} × ₹{i.price}
+                    ₹{i.price} each
+                  </span>
+                  <span style={{ color: '#059669', fontWeight: 700, fontSize: '0.82rem' }}>
+                    ₹{i.price * i.quantity}
                   </span>
                 </div>
-                <strong style={{ color: '#1A2B49' }}>₹{i.price * i.quantity}</strong>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexShrink: 0 }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      background: '#F1F5F9',
+                      borderRadius: '999px',
+                      padding: '2px 4px',
+                      border: '1px solid #E2E8F0',
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => updateQuantity(i.id, -1)}
+                      style={{
+                        padding: '3px 5px',
+                        color: '#1A2B49',
+                        cursor: 'pointer',
+                        background: 'transparent',
+                        border: 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                      aria-label="Decrease quantity"
+                    >
+                      <Minus size={13} />
+                    </button>
+                    <span
+                      style={{
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        minWidth: '18px',
+                        textAlign: 'center',
+                        color: '#1A2B49',
+                      }}
+                    >
+                      {i.quantity}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => updateQuantity(i.id, 1)}
+                      style={{
+                        padding: '3px 5px',
+                        color: '#1A2B49',
+                        cursor: 'pointer',
+                        background: 'transparent',
+                        border: 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                      aria-label="Increase quantity"
+                    >
+                      <Plus size={13} />
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => removeItem(i.id)}
+                    style={{
+                      padding: '4px',
+                      background: 'none',
+                      border: 'none',
+                      color: '#94A3B8',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                    }}
+                    aria-label="Remove item"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </div>
             ))}
+          </div>
+
+          <div style={{ marginTop: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Link
+              to="/cart"
+              style={{
+                fontSize: '0.8rem',
+                color: '#2563EB',
+                textDecoration: 'none',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '3px',
+              }}
+            >
+              ← Edit Full Cart
+            </Link>
+            <Link
+              to={businessSlug ? `/m/${businessSlug}` : businessId ? `/b/${businessId}/menu` : '/customer'}
+              style={{
+                fontSize: '0.8rem',
+                color: '#64748B',
+                textDecoration: 'none',
+                fontWeight: 500,
+              }}
+            >
+              + Add more items
+            </Link>
           </div>
 
           {/* Coupon Code Input */}
@@ -844,33 +983,31 @@ export const PublicCheckout = () => {
                     </div>
 
                     {/* Deep-link button to open installed UPI App */}
-                    <a
-                      href={storeUpiUri}
-                      onClick={() => {
-                        if (storeUpiUri) {
-                          try {
-                            window.location.href = storeUpiUri;
-                          } catch (_) {}
-                        }
-                      }}
+                    <button
+                      type="button"
+                      onClick={handlePlaceOrder}
+                      disabled={placing}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         gap: '0.5rem',
+                        width: '100%',
                         padding: '0.75rem',
                         borderRadius: '10px',
                         background: '#059669',
+                        border: 'none',
                         color: '#FFFFFF',
                         fontWeight: 700,
-                        textDecoration: 'none',
                         fontSize: '0.9rem',
                         marginBottom: '0.5rem',
+                        cursor: placing ? 'not-allowed' : 'pointer',
+                        opacity: placing ? 0.7 : 1,
                       }}
                     >
                       <Smartphone size={18} />
-                      Open in UPI App (GPay / PhonePe / Paytm)
-                    </a>
+                      {placing ? 'Placing Order...' : 'Place Order & Pay via UPI App'}
+                    </button>
                     <p style={{ fontSize: '0.72rem', color: '#64748B', textAlign: 'center', margin: '0 0 0.5rem' }}>
                       💡 If your UPI app does not open automatically, copy the Store UPI ID above or scan the QR code.
                     </p>
@@ -1088,11 +1225,9 @@ export const PublicCheckout = () => {
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
-              {activeOrderRef && activeRzpOrder && (
-                <Button size="sm" variant="danger" onClick={() => launchRazorpayUpiCheckout(activeOrderRef, activeRzpOrder)}>
-                  Retry Payment
-                </Button>
-              )}
+              <Button size="sm" variant="danger" onClick={handlePlaceOrder}>
+                Retry Order
+              </Button>
               {activeOrderRef && (
                 <Button size="sm" variant="outline" onClick={() => navigate(`/payment-status/${activeOrderRef}`)}>
                   View Status
@@ -1122,19 +1257,14 @@ export const PublicCheckout = () => {
               <div style={{ flex: 1, textAlign: 'left' }}>
                 <strong style={{ display: 'block', fontSize: '0.9rem' }}>Payment pending</strong>
                 <span style={{ fontSize: '0.75rem', color: '#B45309' }}>
-                  Checkout modal closed before completing payment. Your order remains pending.
+                  Your order has been created and payment is pending. Please complete UPI payment or view order status.
                 </span>
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
-              {activeOrderRef && activeRzpOrder && (
-                <Button size="sm" variant="primary" onClick={() => launchRazorpayUpiCheckout(activeOrderRef, activeRzpOrder)}>
-                  Complete UPI Payment Now
-                </Button>
-              )}
               {activeOrderRef && (
                 <Button size="sm" variant="outline" onClick={() => navigate(`/payment-status/${activeOrderRef}`)}>
-                  View Status
+                  View Order Status
                 </Button>
               )}
             </div>
@@ -1153,11 +1283,7 @@ export const PublicCheckout = () => {
             paymentState === 'PAYMENT_SUCCESSFUL' ||
             (paymentMethod === 'UPI' && !upiConfig?.upi_id)
           }
-          onClick={
-            paymentState === 'PAYMENT_PENDING' || paymentState === 'PAYMENT_FAILED'
-              ? () => (activeOrderRef && activeRzpOrder ? launchRazorpayUpiCheckout(activeOrderRef, activeRzpOrder) : handlePlaceOrder())
-              : handlePlaceOrder
-          }
+          onClick={handlePlaceOrder}
           icon={paymentState === 'PAYMENT_SUCCESSFUL' ? CheckCircle2 : Check}
           style={{
             padding: '1rem',
@@ -1180,15 +1306,15 @@ export const PublicCheckout = () => {
           {paymentState === 'AWAITING_PAYMENT'
             ? 'Awaiting UPI Payment...'
             : paymentState === 'VERIFYING_PAYMENT'
-            ? 'Verifying Payment Signature...'
+            ? 'Verifying Payment...'
             : paymentState === 'PAYMENT_SUCCESSFUL'
-            ? 'Payment Verified & Confirmed!'
+            ? 'Payment Confirmed!'
             : paymentState === 'PAYMENT_FAILED'
-            ? `Retry UPI Payment — ₹${grandTotal}`
+            ? `Retry UPI Order — ₹${grandTotal}`
             : paymentState === 'PAYMENT_PENDING'
-            ? `Complete UPI Payment — ₹${grandTotal}`
+            ? `Complete Order — ₹${grandTotal}`
             : paymentMethod === 'UPI'
-            ? `Pay via UPI & Verify Instantly — ₹${grandTotal}`
+            ? `Place Order & Pay via UPI — ₹${grandTotal}`
             : `Place Order (Cash on Counter) — ₹${grandTotal}`}
         </Button>
       </div>

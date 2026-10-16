@@ -4,6 +4,7 @@ ZOOR UP Customer Routes
 import uuid
 import secrets
 import time
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
@@ -12,6 +13,8 @@ from backend.models import CustomerProfileUpdateRequest, QRCheckInRequest, ROLE_
 from backend.database import get_collection
 from backend.auth import get_current_user, get_optional_current_user, require_role
 from backend.rate_limit import enforce_rate_limit
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/customer", tags=["Customer"])
 
@@ -180,7 +183,17 @@ def get_customer_profile(current_user: dict = Depends(require_role([ROLE_CUSTOME
             "notes": "",
             "created_at": datetime.now().isoformat()
         }
-        customers_col.insert_one(cus)
+        try:
+            customers_col.insert_one(cus)
+        except Exception:
+            cus = (
+                (customers_col.find_one({"customer_id": current_user.get("customer_id")}) if current_user.get("customer_id") else None) or
+                (customers_col.find_one({"login_email": current_user.get("email")}) if current_user.get("email") else None) or
+                (customers_col.find_one({"email": current_user.get("email")}) if current_user.get("email") else None) or
+                customers_col.find_one({"user_id": user_id}) or
+                (customers_col.find_one({"phone": current_user.get("phone")}) if current_user.get("phone") else None) or
+                cus
+            )
 
     pts = int(cus.get("points", 0))
     tier_info = calculate_customer_tier(pts)
@@ -258,7 +271,7 @@ def _get_customer_business_loyalty(customer_id: str, business_id: str):
     loyalty_col = get_collection("loyalty")
     record = loyalty_col.find_one({"customer_id": customer_id, "business_id": business_id})
     if not record:
-        record = {
+        new_doc = {
             "_id": f"loyal_{uuid.uuid4().hex[:12]}",
             "customer_id": customer_id,
             "business_id": business_id,
@@ -268,7 +281,11 @@ def _get_customer_business_loyalty(customer_id: str, business_id: str):
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
         }
-        loyalty_col.insert_one(record)
+        try:
+            loyalty_col.insert_one(new_doc)
+            record = new_doc
+        except Exception:
+            record = loyalty_col.find_one({"customer_id": customer_id, "business_id": business_id}) or new_doc
     return record
 
 
@@ -345,7 +362,15 @@ def get_customer_business_loyalty(
     if not is_connected:
         raise HTTPException(status_code=403, detail="Customer is not connected to this business.")
 
-    record = _get_customer_business_loyalty(customer_id, biz["id"])
+    try:
+        record = _get_customer_business_loyalty(customer_id, biz["id"])
+    except Exception as exc:
+        logger.warning(f"Failed to fetch business loyalty for customer {customer_id}: {exc}")
+        record = {
+            "points": profile.get("points", 0),
+            "stamps": profile.get("stamps", 0),
+            "tier": profile.get("membership_tier", "BASIC"),
+        }
     tier_info = calculate_customer_tier(int(record.get("points", 0)))
     return {
         "success": True,
@@ -633,13 +658,18 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
     cb_col = get_collection("customer_businesses")
     customers_col = get_collection("customers")
 
-    # Use the customer_id (ZUP-CUS-XXXX) as the canonical identifier for customer_businesses lookups
-    # The customer_businesses collection stores connections using customer_id (ZUP-CUS-XXXX format)
-    # NOT the internal cus_XXXX document ID
+    # Support all canonical identifiers used in customer_businesses, visits, and orders
+    candidate_ids = list(filter(None, {
+        customer_id,
+        cus_profile.get("id"),
+        cus_profile.get("customer_id"),
+        user_id,
+        current_user.get("id"),
+        current_user.get("customer_id")
+    }))
     query_customer_id = customer_id
 
     # Auto-link any pending invites sent to this customer's email
-    # NEW RULE: Only auto-link if customer has NO active business association
     cus_email = (current_user.get("email") or cus_profile.get("email") or "").strip().lower()
     if cus_email:
         invites_col = get_collection("business_invites")
@@ -647,11 +677,9 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
         for inv in pending_invites:
             b_id = inv.get("business_id")
             if b_id:
-                # Check if customer already has an active business association
-                existing_active = cb_col.find_one({"customer_id": query_customer_id, "status": "active"})
+                existing_active = cb_col.find_one({"customer_id": {"$in": candidate_ids}, "status": "active"})
                 if not existing_active:
-                    # Customer has no active association - auto-link to invited business
-                    if not cb_col.find_one({"customer_id": query_customer_id, "business_id": b_id}):
+                    if not cb_col.find_one({"customer_id": {"$in": candidate_ids}, "business_id": b_id}):
                         cb_col.insert_one({
                             "id": f"cb_{uuid.uuid4().hex[:12]}",
                             "customer_id": query_customer_id,
@@ -661,47 +689,103 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
                             "created_at": datetime.now().isoformat(),
                             "updated_at": datetime.now().isoformat(),
                         })
-                # Mark invite as accepted regardless (don't leave pending if already associated elsewhere)
                 invites_col.update_one({"id": inv["id"]}, {"$set": {"status": "accepted", "updated_at": datetime.now().isoformat()}})
 
-    # Query customer_businesses using ONLY the canonical customer UUID
-    # This prevents duplicate business connections from mixed customer_id formats
-    connections = list(cb_col.find({"customer_id": query_customer_id, "status": "active"}))
+    # Query customer_businesses using all candidate identifiers
+    connections = list(cb_col.find({"customer_id": {"$in": candidate_ids}, "status": "active"}))
     connected_biz_ids = list({str(c["business_id"]) for c in connections if c.get("business_id")})
+
+    orders_col = get_collection("orders")
+    reservations_col = get_collection("table_reservations")
+
+    # Also discover businesses from previous customer orders or reservations
+    try:
+        user_id = current_user.get("id")
+        raw_cust_orders = list(orders_col.find({"customer_id": {"$in": candidate_ids}}))
+        if user_id:
+            raw_cust_orders += list(orders_col.find({"customer_user_id": user_id}))
+        for o in raw_cust_orders:
+            b_id = o.get("business_id")
+            if b_id and b_id not in connected_biz_ids:
+                connected_biz_ids.append(b_id)
+        raw_cust_res = list(reservations_col.find({"customer_id": {"$in": candidate_ids}}))
+        for r in raw_cust_res:
+            b_id = r.get("business_id")
+            if b_id and b_id not in connected_biz_ids:
+                connected_biz_ids.append(b_id)
+    except Exception:
+        pass
+
+    actual_points = int(cus_profile.get("points", 0) or 0)
+    actual_stamps = int(cus_profile.get("stamps", 0) or 0)
+    tier_info = calculate_customer_tier(actual_points)
 
     # Customer with no businesses connected
     if not connected_biz_ids:
-        tier_info = calculate_customer_tier(0)
+        # Load customer's actual orders and reservations even if no active storefront connection
+        seen_order_ids = set()
+        cus_orders = []
+        try:
+            for o in raw_cust_orders:
+                oid = o.get("id") or o.get("order_id")
+                if oid and oid not in seen_order_ids:
+                    seen_order_ids.add(oid)
+                    cus_orders.append(o)
+            cus_orders.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        except Exception:
+            pass
+
+        seen_res_ids = set()
+        cus_reservations = []
+        try:
+            for r in raw_cust_res:
+                rid = r.get("id") or r.get("reservation_id")
+                if rid and rid not in seen_res_ids:
+                    seen_res_ids.add(rid)
+                    cus_reservations.append(r)
+            cus_reservations.sort(key=lambda x: x.get("created_at", "") or x.get("booking_date", ""), reverse=True)
+        except Exception:
+            pass
+
         return {
             "success": True,
             "is_empty": True,
             "customer": {
                 **cus_profile,
-                "points": 0,
-                "stamps": 0,
-                "lifetime_points": 0,
-                "total_visits": 0,
-                "total_spent": 0.0,
-                "level": 1,
-                "level_name": "BASIC",
-                "membership_tier": "BASIC",
+                "points": actual_points,
+                "stamps": actual_stamps,
+                "lifetime_points": cus_profile.get("lifetime_points", actual_points),
+                "total_visits": cus_profile.get("total_visits", 0),
+                "total_spent": float(cus_profile.get("total_spent", 0.0) or 0.0),
+                "level": tier_info.get("level", 1),
+                "level_name": tier_info.get("level_name", "BASIC"),
+                "membership_tier": tier_info.get("level_name", "BASIC"),
                 "loyalty": tier_info
             },
             "businesses": [],
-            "points": 0,
-            "stamps": 0,
-            "rewards": [],
+            "points": actual_points,
+            "stamps": actual_stamps,
+            "rewards": DEFAULT_REWARDS,
             "visits": [],
-            "orders": [],
-            "reservations": [],
+            "orders": cus_orders,
+            "reservations": cus_reservations,
             "offers": []
         }
 
     # Customer has connected businesses - STRICT ISOLATION: ONLY connected businesses
     businesses_col = get_collection("businesses")
-    all_raw_biz = [b for b in businesses_col.find({"status": "ACTIVE"}) if b["id"] in connected_biz_ids]
+    all_raw_biz = []
+    if len(connected_biz_ids) == 1:
+        single_b = businesses_col.find_one({"id": connected_biz_ids[0]})
+        if single_b:
+            all_raw_biz = [single_b]
+    elif len(connected_biz_ids) > 1:
+        all_raw_biz = businesses_col.find({"id": {"$in": connected_biz_ids}})
+
     if not all_raw_biz:
-        all_raw_biz = [b for b in businesses_col.find() if b["id"] in connected_biz_ids]
+        all_raw_biz = [b for b in businesses_col.find({"status": "ACTIVE"}) if b.get("id") in connected_biz_ids]
+    if not all_raw_biz:
+        all_raw_biz = [b for b in businesses_col.find() if b.get("id") in connected_biz_ids]
 
     seen_biz = set()
     all_biz = []
@@ -712,17 +796,44 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
             all_biz.append(b)
 
     visits_col = get_collection("visits")
-    orders_col = get_collection("orders")
-    reservations_col = get_collection("table_reservations")
 
-    # Use customer_id (ZUP-CUS-XXXX) for consistent lookups across visits, orders, reservations
-    # The customer_businesses collection and visits/orders/reservations all use customer_id format
-    cus_visits = [v for v in visits_col.find({"customer_id": query_customer_id}) if v.get("business_id") in connected_biz_ids]
-    cus_orders = [o for o in orders_col.find({"customer_id": query_customer_id}) if o.get("business_id") in connected_biz_ids]
-    cus_reservations = list(reservations_col.find({"customer_id": query_customer_id}))
-    if not cus_reservations:
-        bookings_col = get_collection("table_bookings")
-        cus_reservations = list(bookings_col.find({"customer_id": query_customer_id}))
+    cus_visits = []
+    cus_orders = []
+    cus_reservations = []
+    try:
+        cus_visits = [v for v in visits_col.find({"customer_id": {"$in": candidate_ids}}) if v.get("business_id") in connected_biz_ids]
+    except Exception as exc:
+        logger.warning(f"Failed to query visits for customer {candidate_ids}: {exc}")
+
+    try:
+        all_cust_orders = list(orders_col.find({"customer_id": {"$in": candidate_ids}}))
+        user_id = current_user.get("id")
+        if user_id:
+            all_cust_orders += list(orders_col.find({"customer_user_id": user_id}))
+        seen_order_ids = set()
+        for o in all_cust_orders:
+            oid = o.get("id") or o.get("order_id")
+            if oid and oid not in seen_order_ids:
+                seen_order_ids.add(oid)
+                cus_orders.append(o)
+        cus_orders.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    except Exception as exc:
+        logger.warning(f"Failed to query orders for customer {candidate_ids}: {exc}")
+
+    try:
+        raw_res = list(reservations_col.find({"customer_id": {"$in": candidate_ids}}))
+        if not raw_res:
+            bookings_col = get_collection("table_bookings")
+            raw_res = list(bookings_col.find({"customer_id": {"$in": candidate_ids}}))
+        seen_res_ids = set()
+        for r in raw_res:
+            rid = r.get("id") or r.get("reservation_id")
+            if rid and rid not in seen_res_ids:
+                seen_res_ids.add(rid)
+                cus_reservations.append(r)
+        cus_reservations.sort(key=lambda x: x.get("created_at", "") or x.get("booking_date", ""), reverse=True)
+    except Exception as exc:
+        logger.warning(f"Failed to query reservations for customer {candidate_ids}: {exc}")
 
     return {
         "success": True,
@@ -734,7 +845,7 @@ def get_customer_home(current_user: dict = Depends(require_role([ROLE_CUSTOMER])
         "visits": cus_visits,
         "orders": cus_orders,
         "reservations": cus_reservations,
-        "rewards": [],
+        "rewards": DEFAULT_REWARDS,
         "offers": []
     }
 
@@ -774,7 +885,9 @@ def connect_customer_business(
     cb_col = get_collection("customer_businesses")
 
     # Check if customer already has an active association with THIS business
-    existing_same = cb_col.find_one({"customer_id": customer_id, "business_id": actual_biz_id, "status": "active"})
+    user_id = current_user.get("id")
+    candidate_ids = list(filter(None, {customer_id, profile.get("id"), user_id, current_user.get("customer_id")}))
+    existing_same = cb_col.find_one({"customer_id": {"$in": candidate_ids}, "business_id": actual_biz_id, "status": "active"})
     if existing_same:
         # Same business - idempotent success
         already_connected = True
@@ -792,7 +905,6 @@ def connect_customer_business(
         }
 
     # No active association with this business - create new one
-    # (Allow multiple businesses - no restriction on different business)
     now_iso = datetime.now().isoformat()
     new_cb = {
         "id": f"cb_{uuid.uuid4().hex[:12]}",
@@ -807,7 +919,7 @@ def connect_customer_business(
         cb_col.insert_one(new_cb)
         already_connected = False
     except Exception:
-        existing = cb_col.find_one({"customer_id": customer_id, "business_id": actual_biz_id})
+        existing = cb_col.find_one({"customer_id": {"$in": candidate_ids}, "business_id": actual_biz_id})
         if not existing:
             raise
         already_connected = True
@@ -1024,6 +1136,8 @@ DEFAULT_REWARDS = [
         "points": 100,
         "stamps": 0,
         "category": "Beverage",
+        "discount_type": "FIXED",
+        "discount_value": 50.0,
         "active": True
     },
     {
@@ -1033,6 +1147,8 @@ DEFAULT_REWARDS = [
         "points": 200,
         "stamps": 0,
         "category": "Discount",
+        "discount_type": "FIXED",
+        "discount_value": 100.0,
         "active": True
     },
     {
@@ -1042,6 +1158,9 @@ DEFAULT_REWARDS = [
         "points": 350,
         "stamps": 0,
         "category": "Voucher",
+        "discount_type": "PERCENTAGE",
+        "discount_value": 20.0,
+        "max_discount": 500.0,
         "active": True
     },
     {
@@ -1051,6 +1170,8 @@ DEFAULT_REWARDS = [
         "points": 500,
         "stamps": 0,
         "category": "Dining",
+        "discount_type": "FIXED",
+        "discount_value": 250.0,
         "active": True
     }
 ]
@@ -1074,6 +1195,8 @@ def get_customer_rewards(
             "points": int(v.get("points_required") or (v.get("discount_value") or 10) * 10),
             "stamps": int(v.get("stamps_required") or 0),
             "category": v.get("category", "Voucher"),
+            "discount_type": v.get("discount_type", "FIXED"),
+            "discount_value": float(v.get("discount_value", 50.0)),
             "active": True
         })
     if not rewards:
@@ -1106,7 +1229,10 @@ def claim_customer_reward(
                 "title": v.get("title"),
                 "description": v.get("description", ""),
                 "points": int(v.get("points_required") or 100),
-                "stamps": int(v.get("stamps_required") or 0)
+                "stamps": int(v.get("stamps_required") or 0),
+                "discount_type": v.get("discount_type", "FIXED"),
+                "discount_value": float(v.get("discount_value", 50.0)),
+                "minimum_order": float(v.get("minimum_order") or v.get("minimum_order_value") or 0.0),
             }
             if not biz_id:
                 biz_id = v.get("business_id")
@@ -1115,13 +1241,18 @@ def claim_customer_reward(
             "id": req.reward_id,
             "title": "VIP Reward Voucher",
             "points": 100,
-            "stamps": 0
+            "stamps": 0,
+            "discount_type": "FIXED",
+            "discount_value": 50.0,
+            "minimum_order": 0.0,
         }
     
-    # Prevent duplicate redemption
+    # Prevent duplicate redemption of the same active voucher
+    user_id = current_user.get("id")
+    candidate_cids = list(filter(None, {cust_id, profile.get("id"), user_id, current_user.get("customer_id")}))
     cv_col = get_collection("customer_vouchers")
     existing_claim = cv_col.find_one({
-        "customer_id": cust_id,
+        "customer_id": {"$in": candidate_cids},
         "voucher_id": reward["id"],
         "status": "ACTIVE"
     })
@@ -1138,17 +1269,34 @@ def claim_customer_reward(
 
     new_pts = current_pts - pts_required
     customers_col = get_collection("customers")
-    customers_col.update_one({"customer_id": cust_id}, {"$set": {"points": new_pts, "updated_at": datetime.now().isoformat()}})
+    target_doc_id = profile.get("id") or cust_id
+    customers_col.update_one({"id": target_doc_id}, {"$set": {"points": new_pts, "updated_at": datetime.now().isoformat()}})
+    if target_doc_id != cust_id:
+        customers_col.update_one({"customer_id": cust_id}, {"$set": {"points": new_pts, "updated_at": datetime.now().isoformat()}})
     
+    loyal = None
+    orig_loyal_pts = None
+    loyalty_col = None
     if biz_id:
         loyalty_col = get_collection("loyalty")
-        loyal = loyalty_col.find_one({"customer_id": cust_id, "business_id": biz_id})
+        loyal = loyalty_col.find_one({"customer_id": {"$in": candidate_cids}, "business_id": biz_id})
         if loyal:
-            biz_pts = max(0, int(loyal.get("points", 0)) - pts_required)
-            loyalty_col.update_one({"customer_id": cust_id, "business_id": biz_id}, {"$set": {"points": biz_pts, "updated_at": datetime.now().isoformat()}})
+            orig_loyal_pts = int(loyal.get("points", 0))
+            biz_pts = max(0, orig_loyal_pts - pts_required)
+            loyalty_col.update_one({"id": loyal.get("id") or loyal.get("_id")}, {"$set": {"points": biz_pts, "updated_at": datetime.now().isoformat()}})
 
-    code = f"ZUP-{uuid.uuid4().hex[:6].upper()}"
-    cv_col = get_collection("customer_vouchers")
+    disc_type = str(reward.get("discount_type") or "FIXED").upper()
+    disc_val = float(reward.get("discount_value") or (100.0 if "100" in reward.get("title", "") else 50.0))
+    min_ord = float(reward.get("minimum_order") or 0.0)
+
+    # Ensure unique voucher code
+    vouchers_col = get_collection("vouchers")
+    code = f"ZUP-{secrets.token_hex(4).upper()}"
+    attempt = 0
+    while (cv_col.find_one({"code": code}) or vouchers_col.find_one({"code": code})) and attempt < 5:
+        code = f"ZUP-{secrets.token_hex(4).upper()}"
+        attempt += 1
+
     cv_doc = {
         "id": f"cv_{uuid.uuid4().hex[:12]}",
         "customer_id": cust_id,
@@ -1156,25 +1304,43 @@ def claim_customer_reward(
         "voucher_id": reward["id"],
         "code": code,
         "title": reward["title"],
+        "discount_type": disc_type,
+        "discount_value": disc_val,
+        "minimum_order": min_ord,
         "status": "ACTIVE",
         "claimed_at": datetime.now().isoformat(),
         "expires_at": (datetime.now() + timedelta(days=30)).isoformat(),
         "created_at": datetime.now().isoformat()
     }
-    cv_col.insert_one(cv_doc)
 
-    tx_col = get_collection("loyalty_transactions")
-    tx_col.insert_one({
-        "customer_id": cust_id,
-        "business_id": biz_id or "default",
-        "type": "REWARD_CLAIM",
-        "points_delta": -pts_required,
-        "amount": pts_required,
-        "balance_after": new_pts,
-        "description": f"Claimed {reward['title']}",
-        "reference_id": code,
-        "created_at": datetime.now().isoformat()
-    })
+    try:
+        cv_col.insert_one(cv_doc)
+        tx_col = get_collection("loyalty_transactions")
+        tx_col.insert_one({
+            "customer_id": cust_id,
+            "business_id": biz_id or "default",
+            "type": "REWARD_CLAIM",
+            "points_delta": -pts_required,
+            "amount": pts_required,
+            "balance_after": new_pts,
+            "description": f"Claimed {reward['title']}",
+            "reference_id": code,
+            "created_at": datetime.now().isoformat()
+        })
+    except Exception as e:
+        # Rollback points deduction if voucher creation fails
+        try:
+            customers_col.update_one({"id": target_doc_id}, {"$set": {"points": current_pts, "updated_at": datetime.now().isoformat()}})
+            if target_doc_id != cust_id:
+                customers_col.update_one({"customer_id": cust_id}, {"$set": {"points": current_pts, "updated_at": datetime.now().isoformat()}})
+            if loyal and orig_loyal_pts is not None and loyalty_col:
+                loyalty_col.update_one({"id": loyal.get("id") or loyal.get("_id")}, {"$set": {"points": orig_loyal_pts, "updated_at": datetime.now().isoformat()}})
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to issue reward voucher. Your points have been restored: {str(e)}"
+        )
 
     return {
         "success": True,
@@ -1192,8 +1358,10 @@ def get_customer_claimed_rewards(
 ):
     profile = get_customer_profile(current_user)
     cust_id = profile["customer_id"]
+    user_id = current_user.get("id")
+    candidate_cids = list(filter(None, {cust_id, profile.get("id"), user_id, current_user.get("customer_id")}))
     cv_col = get_collection("customer_vouchers")
-    records = cv_col.find({"customer_id": cust_id})
+    records = cv_col.find({"customer_id": {"$in": candidate_cids}})
     claims = []
     for r in records:
         claims.append({
@@ -1204,9 +1372,12 @@ def get_customer_claimed_rewards(
             "reward_title": r.get("title") or "VIP Reward",
             "voucher_code": r.get("code"),
             "code": r.get("code"),
+            "discount_type": r.get("discount_type", "FIXED"),
+            "discount_value": float(r.get("discount_value", 50.0)),
             "status": r.get("status", "ACTIVE"),
             "claimed_at": r.get("claimed_at") or r.get("created_at"),
             "expires_at": r.get("expires_at"),
         })
+    claims.sort(key=lambda x: x.get("claimed_at", ""), reverse=True)
     return {"success": True, "claims": claims}
 

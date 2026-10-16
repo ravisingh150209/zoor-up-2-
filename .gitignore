@@ -35,6 +35,7 @@ __pycache__/
 test-results/
 .firebase/
 uploads/
+scratch/
 
 # Editor directories and files
 .vscode/*

@@ -75,9 +75,10 @@ def get_public_businesses():
     No authentication required.
     """
     businesses_col = get_collection("businesses")
-    all_biz = businesses_col.find({"status": "ACTIVE"})
+    raw_biz = businesses_col.find()
+    all_biz = [b for b in raw_biz if str(b.get("status", "ACTIVE")).upper() == "ACTIVE"]
     if not all_biz:
-        all_biz = businesses_col.find()
+        all_biz = raw_biz
 
     result = []
     for b in all_biz:
@@ -1172,6 +1173,26 @@ def get_public_menu(business_identifier: str):
     logo_url = biz.get("logo") or biz.get("logo_url") or None
     cover_url = biz.get("cover_image") or biz.get("cover_photo_url") or None
 
+    saved_upi_id = (
+        (biz.get("metadata") or {}).get("upi_id") or
+        biz.get("upi_id") or
+        (biz.get("payment_settings") or {}).get("upi_id") or
+        biz.get("vpa") or
+        ""
+    ).strip()
+    saved_upi_name = (
+        (biz.get("metadata") or {}).get("upi_name") or
+        biz.get("upi_name") or
+        biz.get("name") or
+        "Store"
+    ).strip()
+    saved_upi_notes = (
+        (biz.get("metadata") or {}).get("upi_notes") or
+        biz.get("upi_notes") or
+        "ZOOR UP Store Payment"
+    ).strip()
+    saved_upi_enabled = bool(saved_upi_id and biz.get("upi_enabled", True))
+
     return {
         "success": True,
         "id": biz_id,
@@ -1192,7 +1213,10 @@ def get_public_menu(business_identifier: str):
             "logo_url": logo_url,
             "cover_image": cover_url,
             "cover_photo_url": cover_url,
-            "upi_id": biz.get("upi_id", ""),
+            "upi_id": saved_upi_id,
+            "upi_name": saved_upi_name,
+            "upi_notes": saved_upi_notes,
+            "upi_enabled": saved_upi_enabled,
             "stamps_required": int(biz.get("stamps_required", 10) or 10),
             "reward_description": biz.get("reward_description", ""),
             "menu_enabled": menu_enabled,

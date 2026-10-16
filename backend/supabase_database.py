@@ -7,7 +7,10 @@ CRUD support, filtering, and multi-tenant scoping.
 from __future__ import annotations
 
 import os
+import re
+import secrets
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -142,6 +145,9 @@ def _normalize_doc(doc: Dict[str, Any], table_name: str = "") -> Dict[str, Any]:
     if table_name == "orders" and normalized.get("order_id"):
         normalized["id"] = normalized["order_id"]
         normalized["_id"] = normalized["order_id"]
+    if table_name == "products" and isinstance(normalized.get("metadata"), dict) and normalized["metadata"].get("original_id"):
+        normalized["id"] = normalized["metadata"]["original_id"]
+        normalized["_id"] = normalized["metadata"]["original_id"]
     if table_name == "customers":
         if normalized.get("full_name") and not normalized.get("name"):
             normalized["name"] = normalized["full_name"]
@@ -155,7 +161,11 @@ def _normalize_doc(doc: Dict[str, Any], table_name: str = "") -> Dict[str, Any]:
         elif isinstance(normalized.get("metadata"), dict) and normalized["metadata"].get("customer_id"):
             normalized["customer_id"] = normalized["metadata"]["customer_id"]
         if isinstance(normalized.get("metadata"), dict) and normalized["metadata"].get("order_id"):
-            normalized["order_id"] = normalized["metadata"]["order_id"]
+            canonical_order_id = normalized["metadata"]["order_id"]
+            normalized["order_id"] = canonical_order_id
+            if table_name == "orders":
+                normalized["id"] = canonical_order_id
+                normalized["_id"] = canonical_order_id
     # Merge metadata fields onto normalized doc so persisted JSONB properties (e.g. upi_id, upi_name) are top-level
     if isinstance(normalized.get("metadata"), dict):
         for k, v in normalized["metadata"].items():
@@ -247,7 +257,10 @@ class SupabaseCollection:
             if isinstance(raw_val, dict):
                 for op, operand in raw_val.items():
                     if op == "$in":
-                        query = query.in_(field, list(operand))
+                        in_list = list(operand)
+                        if field == "id" and self.table_name in UUID_TABLES:
+                            in_list = [_to_db_uuid(x) for x in in_list]
+                        query = query.in_(field, in_list)
                     elif op == "$gte":
                         query = query.gte(field, operand)
                     elif op == "$lte":
@@ -272,11 +285,39 @@ class SupabaseCollection:
 
         return query
 
+    def _execute_with_retry(self, action: Any, max_retries: int = 2) -> Any:
+        for attempt in range(max_retries + 1):
+            try:
+                if callable(action):
+                    return action()
+                return action.execute()
+            except Exception as exc:
+                err_msg = str(exc)
+                err_no = getattr(exc, "errno", None)
+                is_transient = (
+                    err_no in (11, 104, 110, 111)
+                    or "Errno 11" in err_msg
+                    or "Resource temporarily unavailable" in err_msg
+                    or "EAGAIN" in err_msg
+                    or "EWOULDBLOCK" in err_msg
+                    or "Connection reset" in err_msg
+                    or "timed out" in err_msg.lower()
+                    or "readtimeout" in err_msg.lower()
+                    or "connecttimeout" in err_msg.lower()
+                    or isinstance(exc, (BlockingIOError, ConnectionResetError, TimeoutError))
+                )
+                if is_transient and attempt < max_retries:
+                    time.sleep(0.15 * (2 ** attempt))
+                    continue
+                if is_transient:
+                    raise SupabaseDatabaseError("Database resource temporarily unavailable. Please retry.") from exc
+                raise
+
     def find_one(self, filter_dict: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         try:
             query = self.client.table(self.table_name).select("*")
             query = self._query_filters(query, filter_dict)
-            response = query.limit(1).execute()
+            response = self._execute_with_retry(lambda: query.limit(1).execute())
             records = response.data or []
             if not records:
                 return None
@@ -293,7 +334,7 @@ class SupabaseCollection:
             query = self._query_filters(query, filter_dict)
             if limit is not None:
                 query = query.limit(limit)
-            response = query.execute()
+            response = self._execute_with_retry(lambda: query.execute())
             records = response.data or []
             return [_normalize_doc(r, self.table_name) for r in records]
         except Exception as exc:
@@ -306,7 +347,7 @@ class SupabaseCollection:
         try:
             query = self.client.table(self.table_name).select("*", count="exact", head=True)
             query = self._query_filters(query, filter_dict)
-            response = query.execute()
+            response = self._execute_with_retry(lambda: query.execute())
             return int(response.count or 0)
         except Exception as exc:
             err_msg = str(exc)
@@ -331,6 +372,11 @@ class SupabaseCollection:
                 doc["invoice_number"] = orig_id
             elif self.table_name == "orders" and "order_id" not in doc:
                 doc["order_id"] = orig_id
+            elif self.table_name == "products":
+                if "metadata" not in doc or not isinstance(doc["metadata"], dict):
+                    doc["metadata"] = {}
+                doc["metadata"]["original_id"] = orig_id
+                doc["metadata"]["product_code"] = orig_id
             doc["id"] = _to_db_uuid(orig_id)
 
         # Sanitize non-UUID foreign keys for tables where store_id / customer_id are UUID
@@ -419,7 +465,7 @@ class SupabaseCollection:
 
         while True:
             try:
-                response = self.client.table(self.table_name).insert(doc).execute()
+                response = self._execute_with_retry(lambda: self.client.table(self.table_name).insert(doc).execute())
                 records = response.data or []
                 if not records:
                     return InsertOneResult(doc["id"])
@@ -430,6 +476,8 @@ class SupabaseCollection:
                 if "23505" in err_msg and "customers_customer_id_key" in err_msg and self.table_name == "customers":
                     doc["customer_id"] = f"ZUP-CUS-{secrets.token_hex(4).upper()}"
                     continue
+                if "23505" in err_msg and self.table_name in ("loyalty", "customer_businesses"):
+                    return InsertOneResult(doc.get("id") or doc.get("_id"))
                 if "23503" in err_msg:
                     if "order_id" in err_msg and "order_id" in doc:
                         del doc["order_id"]
@@ -441,7 +489,6 @@ class SupabaseCollection:
                         del doc["store_id"]
                         continue
                 if "PGRST204" in err_msg or "Could not find the" in err_msg:
-                    import re
                     match = re.search(r"Could not find the '([^']+)' column", err_msg)
                     if match:
                         bad_col = match.group(1)
@@ -549,21 +596,20 @@ class SupabaseCollection:
         while True:
             try:
                 if target_id:
-                    response = self.client.table(self.table_name).update(values).eq("id", target_id).execute()
+                    response = self._execute_with_retry(lambda: self.client.table(self.table_name).update(values).eq("id", target_id).execute())
                     records = response.data or []
                     if not records and self.table_name == "customers" and existing and existing.get("customer_id"):
-                        response = self.client.table(self.table_name).update(values).eq("customer_id", existing["customer_id"]).execute()
+                        response = self._execute_with_retry(lambda: self.client.table(self.table_name).update(values).eq("customer_id", existing["customer_id"]).execute())
                         records = response.data or []
                 else:
                     query = self.client.table(self.table_name).update(values)
                     query = self._query_filters(query, filter_dict)
-                    response = query.execute()
+                    response = self._execute_with_retry(lambda: query.execute())
                     records = response.data or []
                 return UpdateResult(len(records), len(records))
             except Exception as exc:
                 err_msg = str(exc)
                 if "PGRST204" in err_msg or "Could not find the" in err_msg:
-                    import re
                     match = re.search(r"Could not find the '([^']+)' column", err_msg)
                     if match:
                         bad_col = match.group(1)
@@ -588,22 +634,22 @@ class SupabaseCollection:
         if target_id and self.table_name in UUID_TABLES and not _is_valid_uuid(target_id):
             target_id = _to_db_uuid(target_id)
         if target_id:
-            response = self.client.table(self.table_name).delete().eq("id", target_id).execute()
+            response = self._execute_with_retry(lambda: self.client.table(self.table_name).delete().eq("id", target_id).execute())
             records = response.data or []
             if not records and self.table_name == "customers" and existing and existing.get("customer_id"):
-                response = self.client.table(self.table_name).delete().eq("customer_id", existing["customer_id"]).execute()
+                response = self._execute_with_retry(lambda: self.client.table(self.table_name).delete().eq("customer_id", existing["customer_id"]).execute())
                 records = response.data or []
             return DeleteResult(len(records))
         else:
             query = self.client.table(self.table_name).delete()
             query = self._query_filters(query, filter_dict).limit(1)
-            response = query.execute()
+            response = self._execute_with_retry(lambda: query.execute())
             return DeleteResult(len(response.data or []))
 
     def delete_many(self, filter_dict: Dict[str, Any]) -> DeleteResult:
         query = self.client.table(self.table_name).delete()
         query = self._query_filters(query, filter_dict)
-        response = query.execute()
+        response = self._execute_with_retry(lambda: query.execute())
         return DeleteResult(len(response.data or []))
 
     def create_index(self, *args, **kwargs):

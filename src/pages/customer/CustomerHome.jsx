@@ -39,6 +39,7 @@ import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Modal } from '../../components/ui/Modal';
 import { EmptyState } from '../../components/ui/States';
+import { WidgetErrorBoundary } from '../../components/ui/WidgetErrorBoundary';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 
@@ -95,11 +96,13 @@ export const CustomerHome = () => {
   const [celebrationData, setCelebrationData] = useState(null);
   const celebratedRef = useRef(false);
   const inFlightRef = useRef(false);
+  const lastLoadAttemptRef = useRef(0);
+  const [retrying, setRetrying] = useState(false);
 
   const customerId = profile?.customer_id || user?.customer_id || '';
   const customerName = profile?.name || user?.name || 'Customer';
-  const customerPoints = Math.max(0, Number(selectedBusinessId && loyaltyStatus ? (loyaltyStatus.points ?? 0) : (profile?.points ?? user?.points ?? 0)) || 0);
-  const customerStamps = Math.max(0, Number(selectedBusinessId && loyaltyStatus ? (loyaltyStatus.stamps ?? 0) : (profile?.stamps ?? user?.stamps ?? 0)) || 0);
+  const customerPoints = Math.max(0, Number(selectedBusinessId && loyaltyStatus ? (loyaltyStatus.points ?? profile?.points ?? user?.points ?? 0) : (profile?.points ?? user?.points ?? 0)) || 0);
+  const customerStamps = Math.max(0, Number(selectedBusinessId && loyaltyStatus ? (loyaltyStatus.stamps ?? profile?.stamps ?? user?.stamps ?? 0) : (profile?.stamps ?? user?.stamps ?? 0)) || 0);
   const totalVisits = Math.max(0, Number(profile?.total_visits ?? profile?.visits ?? (visits?.length || 0)) || 0);
   const lifetimePoints = Math.max(0, Number(profile?.lifetime_points ?? customerPoints) || 0);
   const isNewCustomer = customerPoints === 0 && customerStamps === 0 && (visits?.length || 0) === 0;
@@ -113,6 +116,9 @@ export const CustomerHome = () => {
     pointsNeeded: 500,
     totalPoints: 0
   };
+  if (!levelInfo.currentTier) {
+    levelInfo.currentTier = { level: levelInfo.currentLevel || 1, name: 'BASIC', rank: 'BASIC', perk: '1x Points on Purchases' };
+  }
   if (loyaltyStatus?.level) {
     levelInfo.currentLevel = Number(loyaltyStatus.level) || 1;
   }
@@ -121,6 +127,17 @@ export const CustomerHome = () => {
     levelInfo.currentTier.name = statusTierName;
     levelInfo.currentTier.rank = statusTierName;
   }
+
+  const safeJoinedDate = (() => {
+    try {
+      if (!profile?.created_at) return '2026';
+      const d = new Date(profile.created_at);
+      const yr = d.getFullYear();
+      return isNaN(yr) ? '2026' : yr.toString();
+    } catch {
+      return '2026';
+    }
+  })();
 
   useEffect(() => {
     loadAllDashboardData();
@@ -175,8 +192,13 @@ export const CustomerHome = () => {
         setLoyaltyStatus(loyaltyResult.value);
       } else {
         console.warn('Failed to load business loyalty:', loyaltyResult.reason);
-        setLoyaltyStatus(null);
-        setBusinessScopeError(getErrorMessage(loyaltyResult.reason, 'Unable to load loyalty data.'));
+        setLoyaltyStatus(prev => prev || (profile ? {
+          points: profile.points ?? 0,
+          stamps: profile.stamps ?? 0,
+          tier: profile.membership_tier || 'BASIC',
+          business_id: newBizId,
+        } : null));
+        setBusinessScopeError(getErrorMessage(loyaltyResult.reason, 'Loyalty data temporarily unavailable'));
       }
 
       const rewardsResult = results[1];
@@ -195,8 +217,13 @@ export const CustomerHome = () => {
         setOffers([]);
       }
     } catch (err) {
-      setBusinessScopeError(getErrorMessage(err, 'Unable to load loyalty data.'));
-      setLoyaltyStatus(null);
+      setBusinessScopeError(getErrorMessage(err, 'Loyalty data temporarily unavailable'));
+      setLoyaltyStatus(prev => prev || (profile ? {
+        points: profile.points ?? 0,
+        stamps: profile.stamps ?? 0,
+        tier: profile.membership_tier || 'BASIC',
+        business_id: newBizId,
+      } : null));
       setRewards([]);
       setOffers([]);
     } finally {
@@ -235,9 +262,29 @@ export const CustomerHome = () => {
 
         if (connBiz.length === 0) {
           setSelectedBusinessId(null);
-          setLoyaltyStatus(null);
-          setRewards([]);
-          setClaimedRewards([]);
+          setLoyaltyStatus(cProfile ? {
+            points: cProfile.points ?? 0,
+            stamps: cProfile.stamps ?? 0,
+            tier: cProfile.membership_tier || 'BASIC',
+          } : null);
+
+          const [claimedRes, rewardsRes] = await Promise.allSettled([
+            loyaltyService.getClaimedRewards(cProfile?.customer_id || customerId),
+            loyaltyService.getRewards(),
+          ]);
+
+          if (claimedRes.status === 'fulfilled') {
+            setClaimedRewards(claimedRes.value || []);
+          } else {
+            setClaimedRewards([]);
+          }
+
+          if (rewardsRes.status === 'fulfilled') {
+            setRewards(rewardsRes.value || []);
+          } else {
+            setRewards([]);
+          }
+
           setOffers([]);
           notificationService.runReminderEngine(user).catch(() => {});
           return;
@@ -265,7 +312,12 @@ export const CustomerHome = () => {
             setLoyaltyStatus(businessLoyaltyResult.value);
           } else {
             console.warn('Failed to load business loyalty:', businessLoyaltyResult.reason);
-            setLoyaltyStatus(null);
+            setLoyaltyStatus(prev => prev || (cProfile ? {
+              points: cProfile.points ?? 0,
+              stamps: cProfile.stamps ?? 0,
+              tier: cProfile.membership_tier || 'BASIC',
+              business_id: nextSelectedBusinessId,
+            } : null));
             setBusinessScopeError(getErrorMessage(businessLoyaltyResult.reason, 'Loyalty data temporarily unavailable'));
           }
 
@@ -311,7 +363,16 @@ export const CustomerHome = () => {
     } finally {
       inFlightRef.current = false;
       setLoading(false);
+      setRetrying(false);
     }
+  };
+
+  const handleManualRetry = () => {
+    const now = Date.now();
+    if (now - lastLoadAttemptRef.current < 1500) return; // Debounce 1.5s to prevent request storm
+    lastLoadAttemptRef.current = now;
+    setRetrying(true);
+    loadAllDashboardData();
   };
 
   // Claim Reward Execution
@@ -374,6 +435,34 @@ export const CustomerHome = () => {
     setCopiedCode(code);
     addToast(`Voucher code "${code}" copied to clipboard!`, 'info');
     setTimeout(() => setCopiedCode(null), 3000);
+  };
+
+  const [redeemingVoucherId, setRedeemingVoucherId] = useState(null);
+
+  const handleRedeemVoucherAtCounter = async (voucher) => {
+    if (!voucher) return;
+    const vId = voucher.id || voucher.voucher_code || voucher.code;
+    const vCode = voucher.voucher_code || voucher.code || 'Voucher';
+    if (!window.confirm(`Redeem voucher "${vCode}" now at the store counter? This marks it as used.`)) {
+      return;
+    }
+    setRedeemingVoucherId(vId);
+    try {
+      await loyaltyService.redeemReward(vId);
+      addToast(`🎉 Voucher ${vCode} successfully redeemed at counter!`, 'success');
+      setClaimedRewards((prev) =>
+        prev.map((c) => {
+          if ((c.id && c.id === vId) || c.voucher_code === vCode || c.code === vCode) {
+            return { ...c, status: 'REDEEMED' };
+          }
+          return c;
+        })
+      );
+    } catch (err) {
+      addToast(getErrorMessage(err, 'Failed to redeem voucher at counter'), 'error');
+    } finally {
+      setRedeemingVoucherId(null);
+    }
   };
 
   const formatUpiVpa = (vpa) => {
@@ -483,6 +572,15 @@ export const CustomerHome = () => {
         error.toLowerCase().includes('401')
       )
     );
+    const isTemporary = Boolean(
+      error && (
+        error.toLowerCase().includes('temporarily') ||
+        error.toLowerCase().includes('updating') ||
+        error.toLowerCase().includes('retry') ||
+        error.toLowerCase().includes('connection') ||
+        error.toLowerCase().includes('503')
+      )
+    );
 
     return (
       <div style={{ padding: '3.5rem 1.5rem', textAlign: 'center', maxWidth: '480px', margin: '0 auto' }}>
@@ -491,21 +589,21 @@ export const CustomerHome = () => {
             width: '64px',
             height: '64px',
             borderRadius: '50%',
-            background: '#FEE2E2',
-            color: '#DC2626',
+            background: isTemporary ? '#FEF3C7' : '#FEE2E2',
+            color: isTemporary ? '#D97706' : '#DC2626',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             margin: '0 auto 1.25rem',
-            boxShadow: '0 8px 20px rgba(220, 38, 38, 0.15)',
+            boxShadow: isTemporary ? '0 8px 20px rgba(217, 119, 6, 0.15)' : '0 8px 20px rgba(220, 38, 38, 0.15)',
           }}
         >
           <AlertCircle size={32} />
         </div>
         <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#1A2B49', marginBottom: '0.5rem' }}>
-          {isAuthError ? 'Session Expired' : 'Unable to load your loyalty card.'}
+          {isAuthError ? 'Session Expired' : isTemporary ? 'Loyalty Card Temporarily Unavailable' : 'Unable to load your loyalty card.'}
         </h3>
-        <p style={{ fontSize: '0.875rem', color: '#64748B', marginBottom: '1.5rem' }}>
+        <p style={{ fontSize: '0.875rem', color: '#64748B', marginBottom: '1.5rem', lineHeight: '1.5' }}>
           {error}
         </p>
         {isAuthError ? (
@@ -520,11 +618,12 @@ export const CustomerHome = () => {
         ) : (
           <Button
             variant="primary"
-            onClick={loadAllDashboardData}
+            onClick={handleManualRetry}
+            disabled={retrying}
             icon={RefreshCw}
             style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
           >
-            Retry
+            {retrying ? 'Retrying...' : 'Retry'}
           </Button>
         )}
       </div>
@@ -685,7 +784,7 @@ export const CustomerHome = () => {
       {/* =================================================================
           2. 3D DYNAMIC LOYALTY CARD (SECTION 15, ITEM 2)
           ================================================================= */}
-      <div>
+      <WidgetErrorBoundary name="Loyalty Card" onRetry={loadAllDashboardData}>
         <LoyaltyCard3D
           customerName={customerName}
           customerId={customerId}
@@ -695,15 +794,17 @@ export const CustomerHome = () => {
           levelInfo={levelInfo}
           totalVisits={totalVisits}
           lifetimePoints={lifetimePoints}
-          joinedDate={profile?.created_at ? new Date(profile.created_at).getFullYear().toString() : '2026'}
+          joinedDate={safeJoinedDate}
           loading={businessLoading}
         />
-      </div>
+      </WidgetErrorBoundary>
 
       {/* =================================================================
           3. LEVEL PROGRESS TRACKER (SECTION 15, ITEM 3)
           ================================================================= */}
-      <LevelProgressTracker levelInfo={levelInfo} totalPoints={customerPoints} />
+      <WidgetErrorBoundary name="VIP Progression" showRetry={false}>
+        <LevelProgressTracker levelInfo={levelInfo} totalPoints={customerPoints} />
+      </WidgetErrorBoundary>
 
       {/* =================================================================
           4. POINTS / VISITS / REWARDS SUMMARY (SECTION 15, ITEM 4)
@@ -1156,499 +1257,590 @@ export const CustomerHome = () => {
           6. RECENT LOYALTY ACTIVITY (SECTION 15, ITEM 6)
           ================================================================= */}
       <div id="activity-section">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <div>
-            <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>
-              Recent Activity
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: '#64748B', margin: 0 }}>
-              Your verified store visits, stamps earned, and check-in rewards
-            </p>
+        <WidgetErrorBoundary name="Recent Activity">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>
+                Recent Activity
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: '#64748B', margin: 0 }}>
+                Your verified store visits, stamps earned, and in-store purchases
+              </p>
+            </div>
+            <Link
+              to="/customer/orders"
+              style={{ fontSize: '0.82rem', fontWeight: 700, color: '#1A2B49', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px' }}
+            >
+              View Purchases & Receipts →
+            </Link>
           </div>
-        </div>
 
-        {visits.length === 0 && orders.length === 0 ? (
-          <EmptyState
-            icon={Clock}
-            title="Your activity will appear here"
-            description="Scan your first business QR code to earn stamps and record your visits."
-          />
-        ) : (
-          <div
-            className="card"
-            style={{
-              background: '#FFFFFF',
-              border: '1px solid #E2E8F0',
-              borderRadius: '16px',
-              padding: '1rem',
-            }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              {visits.slice(0, 5).map((v) => (
-                <div
-                  key={v.id}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: '0.75rem 0.5rem',
-                    borderBottom: '1px solid #F1F5F9',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <div
-                      style={{
-                        width: '36px',
-                        height: '36px',
-                        borderRadius: '50%',
-                        background: '#FEF3C7',
-                        color: '#92400E',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        flexShrink: 0,
-                      }}
-                    >
-                      <CheckCircle2 size={18} />
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '0.875rem', fontWeight: 700, color: '#1A2B49' }}>
-                        {v.notes || 'Store Check-in Verified'}
+          {visits.length === 0 && orders.length === 0 ? (
+            <EmptyState
+              icon={Clock}
+              title="Your activity will appear here"
+              description="Scan your first business QR code to earn stamps and record your visits."
+            />
+          ) : (
+            <div
+              className="card"
+              style={{
+                background: '#FFFFFF',
+                border: '1px solid #E2E8F0',
+                borderRadius: '16px',
+                padding: '1rem',
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {/* Recent Purchases */}
+                {orders.slice(0, 3).map((o) => (
+                  <div
+                    key={o.id || o.order_id}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '0.75rem 0.5rem',
+                      borderBottom: '1px solid #F1F5F9',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div
+                        style={{
+                          width: '36px',
+                          height: '36px',
+                          borderRadius: '50%',
+                          background: '#EFF6FF',
+                          color: '#2563EB',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <ShoppingBag size={18} />
                       </div>
-                      <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
-                        {formatVisitDateTime(v.timestamp || v.created_at || v.visited_at)}
+                      <div>
+                        <div style={{ fontSize: '0.875rem', fontWeight: 700, color: '#1A2B49' }}>
+                          Order #{o.order_id || o.id} • {o.business_name || 'Store'}
+                        </div>
+                        <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
+                          {formatVisitDateTime(o.created_at)} • {Array.isArray(o.items) ? o.items.length : 1} item(s)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#1A2B49', display: 'block' }}>
+                        ₹{Number(o.total || o.total_amount || 0).toLocaleString()}
+                      </span>
+                      <Badge variant={o.status === 'COMPLETED' ? 'success' : 'info'} style={{ fontSize: '0.65rem' }}>
+                        {o.status || 'CONFIRMED'}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Recent Visits */}
+                {visits.slice(0, 5).map((v) => (
+                  <div
+                    key={v.id}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '0.75rem 0.5rem',
+                      borderBottom: '1px solid #F1F5F9',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div
+                        style={{
+                          width: '36px',
+                          height: '36px',
+                          borderRadius: '50%',
+                          background: '#FEF3C7',
+                          color: '#92400E',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <CheckCircle2 size={18} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.875rem', fontWeight: 700, color: '#1A2B49' }}>
+                          {v.notes || 'Store Check-in Verified'}
+                        </div>
+                        <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
+                          {formatVisitDateTime(v.timestamp || v.created_at || v.visited_at)}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#D97706', display: 'block' }}>
+                        +{v.points_awarded || 50} pts
+                      </span>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#1A2B49' }}>
+                        +{v.stamps_awarded || 1} stamp ☕
                       </span>
                     </div>
                   </div>
-
-                  <div style={{ textAlign: 'right' }}>
-                    <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#D97706', display: 'block' }}>
-                      +{v.points_awarded || 50} pts
-                    </span>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#1A2B49' }}>
-                      +{v.stamps_awarded || 1} stamp ☕
-                    </span>
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </WidgetErrorBoundary>
       </div>
 
       {/* =================================================================
           7. AVAILABLE REWARDS (SECTION 15, ITEM 7)
           ================================================================= */}
       <div id="rewards-section">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
-          <div>
-            <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>
-              Loyalty Rewards Catalog
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: '#64748B', margin: 0 }}>
-              Unlock vouchers and complimentary items using your points & stamps
-            </p>
-          </div>
-
-          <div style={{ display: 'flex', gap: '0.35rem', background: '#F1F5F9', padding: '3px', borderRadius: '10px' }}>
-            <button
-              onClick={() => setRewardsTab('AVAILABLE')}
-              style={{
-                border: 'none',
-                background: rewardsTab === 'AVAILABLE' ? '#FFFFFF' : 'transparent',
-                color: rewardsTab === 'AVAILABLE' ? '#1A2B49' : '#64748B',
-                fontWeight: 700,
-                fontSize: '0.78rem',
-                padding: '5px 12px',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                boxShadow: rewardsTab === 'AVAILABLE' ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
-              }}
-            >
-              Available ({rewards.length})
-            </button>
-            <button
-              onClick={() => setRewardsTab('CLAIMED')}
-              style={{
-                border: 'none',
-                background: rewardsTab === 'CLAIMED' ? '#FFFFFF' : 'transparent',
-                color: rewardsTab === 'CLAIMED' ? '#1A2B49' : '#64748B',
-                fontWeight: 700,
-                fontSize: '0.78rem',
-                padding: '5px 12px',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                boxShadow: rewardsTab === 'CLAIMED' ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
-              }}
-            >
-              My Vouchers ({claimedRewards.length})
-            </button>
-          </div>
-        </div>
-
-        {rewardsTab === 'AVAILABLE' ? (
-          rewards.length === 0 ? (
-            <EmptyState
-              icon={Gift}
-              title="No rewards unlocked yet"
-              description="Keep visiting your favorite businesses to earn stamps and unlock rewards."
-            />
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
-              {rewards.map((rew) => {
-                const canClaim = customerPoints >= (rew.points || 0) || (rew.stamps && customerStamps >= rew.stamps);
-                const progressPct = rew.points ? Math.min(100, Math.round((customerPoints / rew.points) * 100)) : 0;
-
-                return (
-                  <div
-                    key={rew.id}
-                    className="card card-hover"
-                    style={{
-                      background: '#FFFFFF',
-                      border: '1.5px solid #E2E8F0',
-                      borderRadius: '16px',
-                      padding: '1.25rem',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      justifyContent: 'space-between',
-                      boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
-                    }}
-                  >
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
-                        <Badge style={{ background: '#FEF3C7', color: '#92400E', fontWeight: 700, fontSize: '0.72rem' }}>
-                          {rew.category || 'Voucher'}
-                        </Badge>
-                        <span style={{ fontSize: '0.9rem', fontWeight: 800, color: '#D97706' }}>
-                          {rew.points} pts {rew.stamps ? `or ${rew.stamps} stamps` : ''}
-                        </span>
-                      </div>
-
-                      <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
-                        {rew.title}
-                      </h4>
-                      <p style={{ fontSize: '0.8rem', color: '#64748B', marginBottom: '1rem' }}>
-                        Worth ₹{rew.value || 100} off your next order.
-                      </p>
-
-                      {/* Points requirement progress */}
-                      <div style={{ marginBottom: '1rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#64748B', marginBottom: '4px' }}>
-                          <span>Points Progress</span>
-                          <span>{customerPoints} / {rew.points}</span>
-                        </div>
-                        <div style={{ height: '6px', background: '#F1F5F9', borderRadius: '999px', overflow: 'hidden' }}>
-                          <div style={{ width: `${progressPct}%`, height: '100%', background: '#F59E0B' }} />
-                        </div>
-                      </div>
-                    </div>
-
-                    <Button
-                      variant={canClaim ? 'primary' : 'outline'}
-                      size="sm"
-                      fullWidth
-                      disabled={!canClaim}
-                      onClick={() => setSelectedRewardForClaim(rew)}
-                      style={{
-                        background: canClaim ? '#1A2B49' : 'transparent',
-                        color: canClaim ? '#FFFFFF' : '#94A3B8',
-                        borderColor: canClaim ? '#1A2B49' : '#CBD5E1',
-                      }}
-                    >
-                      {canClaim ? 'Claim Reward' : `Need ${Math.max(0, rew.points - customerPoints)} more points`}
-                    </Button>
-                  </div>
-                );
-              })}
+        <WidgetErrorBoundary name="Rewards Catalog">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>
+                Loyalty Rewards Catalog
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: '#64748B', margin: 0 }}>
+                Unlock vouchers and complimentary items using your points & stamps
+              </p>
             </div>
-          )
-        ) : (
-          /* My Claimed Vouchers List */
-          claimedRewards.length === 0 ? (
-            <EmptyState
-              icon={Tag}
-              title="No claimed vouchers yet"
-              description="Claim available rewards above to generate redeemable voucher codes."
-            />
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
-              {claimedRewards.map((c) => (
-                <div
-                  key={c.id}
-                  className="card"
-                  style={{
-                    background: '#FFFFFF',
-                    border: '1.5px solid #10B981',
-                    borderRadius: '16px',
-                    padding: '1.25rem',
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                    <Badge variant="success">ACTIVE VOUCHER</Badge>
-                    <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
-                      Exp: {typeof c.expires_at === 'string' ? c.expires_at.split('T')[0] : '30 days'}
-                    </span>
-                  </div>
-                  <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.5rem' }}>
-                    {c.reward_title}
-                  </h4>
 
-                  {/* Voucher Code Box */}
-                  <div
-                    style={{
-                      background: '#F8FAFC',
-                      border: '1.5px dashed #CBD5E1',
-                      borderRadius: '10px',
-                      padding: '0.75rem',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      marginTop: '0.5rem',
-                    }}
-                  >
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.05rem', fontWeight: 800, color: '#1A2B49' }}>
-                      {c.voucher_code}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyVoucher(c.voucher_code)}
+            <div style={{ display: 'flex', gap: '0.35rem', background: '#F1F5F9', padding: '3px', borderRadius: '10px' }}>
+              <button
+                onClick={() => setRewardsTab('AVAILABLE')}
+                style={{
+                  border: 'none',
+                  background: rewardsTab === 'AVAILABLE' ? '#FFFFFF' : 'transparent',
+                  color: rewardsTab === 'AVAILABLE' ? '#1A2B49' : '#64748B',
+                  fontWeight: 700,
+                  fontSize: '0.78rem',
+                  padding: '5px 12px',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  boxShadow: rewardsTab === 'AVAILABLE' ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
+                }}
+              >
+                Available ({rewards.length})
+              </button>
+              <button
+                onClick={() => setRewardsTab('CLAIMED')}
+                style={{
+                  border: 'none',
+                  background: rewardsTab === 'CLAIMED' ? '#FFFFFF' : 'transparent',
+                  color: rewardsTab === 'CLAIMED' ? '#1A2B49' : '#64748B',
+                  fontWeight: 700,
+                  fontSize: '0.78rem',
+                  padding: '5px 12px',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  boxShadow: rewardsTab === 'CLAIMED' ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
+                }}
+              >
+                My Vouchers ({claimedRewards.length})
+              </button>
+            </div>
+          </div>
+
+          {rewardsTab === 'AVAILABLE' ? (
+            rewards.length === 0 ? (
+              <EmptyState
+                icon={Gift}
+                title="No rewards unlocked yet"
+                description="Keep visiting your favorite businesses to earn stamps and unlock rewards."
+              />
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
+                {rewards.map((rew) => {
+                  const canClaim = customerPoints >= (rew.points || 0) || (rew.stamps && customerStamps >= rew.stamps);
+                  const progressPct = rew.points ? Math.min(100, Math.round((customerPoints / rew.points) * 100)) : 0;
+
+                  return (
+                    <div
+                      key={rew.id}
+                      className="card card-hover"
                       style={{
                         background: '#FFFFFF',
-                        border: '1px solid #CBD5E1',
-                        borderRadius: '6px',
-                        padding: '4px 8px',
+                        border: '1.5px solid #E2E8F0',
+                        borderRadius: '16px',
+                        padding: '1.25rem',
                         display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        fontSize: '0.75rem',
-                        cursor: 'pointer',
-                        color: copiedCode === c.voucher_code ? '#059669' : '#1A2B49',
+                        flexDirection: 'column',
+                        justifyContent: 'space-between',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
                       }}
                     >
-                      {copiedCode === c.voucher_code ? <Check size={14} /> : <Copy size={14} />}
-                      {copiedCode === c.voucher_code ? 'Copied' : 'Copy'}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )
-        )}
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                          <Badge style={{ background: '#FEF3C7', color: '#92400E', fontWeight: 700, fontSize: '0.72rem' }}>
+                            {rew.category || 'Voucher'}
+                          </Badge>
+                          <span style={{ fontSize: '0.9rem', fontWeight: 800, color: '#D97706' }}>
+                            {rew.points} pts {rew.stamps ? `or ${rew.stamps} stamps` : ''}
+                          </span>
+                        </div>
+
+                        <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
+                          {rew.title}
+                        </h4>
+                        <p style={{ fontSize: '0.8rem', color: '#64748B', marginBottom: '1rem' }}>
+                          Worth ₹{rew.value || 100} off your next order.
+                        </p>
+
+                        {/* Points requirement progress */}
+                        <div style={{ marginBottom: '1rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#64748B', marginBottom: '4px' }}>
+                            <span>Points Progress</span>
+                            <span>{customerPoints} / {rew.points}</span>
+                          </div>
+                          <div style={{ height: '6px', background: '#F1F5F9', borderRadius: '999px', overflow: 'hidden' }}>
+                            <div style={{ width: `${progressPct}%`, height: '100%', background: '#F59E0B' }} />
+                          </div>
+                        </div>
+                      </div>
+
+                      <Button
+                        variant={canClaim ? 'primary' : 'outline'}
+                        size="sm"
+                        fullWidth
+                        disabled={!canClaim}
+                        onClick={() => setSelectedRewardForClaim(rew)}
+                        style={{
+                          background: canClaim ? '#1A2B49' : 'transparent',
+                          color: canClaim ? '#FFFFFF' : '#94A3B8',
+                          borderColor: canClaim ? '#1A2B49' : '#CBD5E1',
+                        }}
+                      >
+                        {canClaim ? 'Claim Reward' : `Need ${Math.max(0, rew.points - customerPoints)} more points`}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          ) : (
+            /* My Claimed Vouchers List */
+            claimedRewards.length === 0 ? (
+              <EmptyState
+                icon={Tag}
+                title="No claimed vouchers yet"
+                description="Claim available rewards above to generate redeemable voucher codes."
+              />
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
+                {claimedRewards.map((c) => {
+                  const isRedeemed = String(c.status || '').toUpperCase() === 'REDEEMED';
+                  const vCode = c.voucher_code || c.code;
+                  const vId = c.id || vCode;
+                  return (
+                    <div
+                      key={vId}
+                      className="card"
+                      style={{
+                        background: '#FFFFFF',
+                        border: isRedeemed ? '1.5px solid #CBD5E1' : '1.5px solid #10B981',
+                        borderRadius: '16px',
+                        padding: '1.25rem',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
+                        opacity: isRedeemed ? 0.75 : 1,
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <Badge variant={isRedeemed ? 'secondary' : 'success'}>
+                          {isRedeemed ? 'REDEEMED' : 'ACTIVE VOUCHER'}
+                        </Badge>
+                        <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
+                          {isRedeemed ? 'Used' : `Exp: ${typeof c.expires_at === 'string' ? c.expires_at.split('T')[0] : '30 days'}`}
+                        </span>
+                      </div>
+                      <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.5rem' }}>
+                        {c.reward_title || c.title || 'Store Voucher'}
+                      </h4>
+
+                      {/* Voucher Code Box */}
+                      <div
+                        style={{
+                          background: '#F8FAFC',
+                          border: '1.5px dashed #CBD5E1',
+                          borderRadius: '10px',
+                          padding: '0.75rem',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          marginTop: '0.5rem',
+                        }}
+                      >
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.05rem', fontWeight: 800, color: isRedeemed ? '#64748B' : '#1A2B49', textDecoration: isRedeemed ? 'line-through' : 'none' }}>
+                          {vCode}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyVoucher(vCode)}
+                          style={{
+                            background: '#FFFFFF',
+                            border: '1px solid #CBD5E1',
+                            borderRadius: '6px',
+                            padding: '4px 8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontSize: '0.75rem',
+                            cursor: 'pointer',
+                            color: copiedCode === vCode ? '#059669' : '#1A2B49',
+                          }}
+                        >
+                          {copiedCode === vCode ? <Check size={14} /> : <Copy size={14} />}
+                          {copiedCode === vCode ? 'Copied' : 'Copy'}
+                        </button>
+                      </div>
+
+                      {/* Action buttons */}
+                      <div style={{ marginTop: '0.85rem', display: 'flex', gap: '0.5rem' }}>
+                        {!isRedeemed ? (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            block
+                            loading={redeemingVoucherId === vId}
+                            onClick={() => handleRedeemVoucherAtCounter(c)}
+                          >
+                            Redeem at Counter
+                          </Button>
+                        ) : (
+                          <div style={{ textAlign: 'center', width: '100%', fontSize: '0.8rem', color: '#64748B', fontWeight: 600 }}>
+                            ✓ Redeemed at Counter or in Order
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
+        </WidgetErrorBoundary>
       </div>
 
       {/* =================================================================
           8. ACTIVE OFFERS SECTION (SECTION 14)
           ================================================================= */}
       <div id="offers-section">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <div>
-            <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>
-              Active Store Offers
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: '#64748B', margin: 0 }}>
-              Special discounts and promo codes from partnered businesses
-            </p>
+        <WidgetErrorBoundary name="Active Offers">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>
+                Active Store Offers
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: '#64748B', margin: 0 }}>
+                Special discounts and promo codes from partnered businesses
+              </p>
+            </div>
           </div>
-        </div>
 
-        {offers.length === 0 ? (
-          <EmptyState
-            icon={Tag}
-            title="No active offers right now"
-            description="Check back soon for new promotions from your favorite stores."
-          />
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
-            {offers.slice(0, 4).map((off) => (
-              <div
-                key={off.id}
-                className="card card-hover"
-                style={{
-                  background: '#FFFFFF',
-                  border: '1.5px solid #E2E8F0',
-                  borderRadius: '16px',
-                  padding: '1.25rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'space-between',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                    <Badge style={{ background: '#EFF6FF', color: '#1D4ED8', fontWeight: 700 }}>
-                      {off.discount_type === 'PERCENTAGE' ? `${off.discount_val}% OFF` : `₹${off.discount_val} OFF`}
-                    </Badge>
-                    <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
-                      Exp: {typeof off.end_date === 'string' ? off.end_date.split('T')[0] : 'Ongoing'}
-                    </span>
-                  </div>
-
-                  <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
-                    {off.title}
-                  </h4>
-                  <p style={{ fontSize: '0.78rem', color: '#64748B', marginBottom: '0.75rem' }}>
-                    Min order: ₹{off.min_order || 0}
-                  </p>
-                </div>
-
+          {offers.length === 0 ? (
+            <EmptyState
+              icon={Tag}
+              title="No active offers right now"
+              description="Check back soon for new promotions from your favorite stores."
+            />
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
+              {offers.slice(0, 4).map((off) => (
                 <div
+                  key={off.id}
+                  className="card card-hover"
                   style={{
-                    background: '#FAFAFB',
-                    border: '1px dashed #CBD5E1',
-                    borderRadius: '10px',
-                    padding: '0.5rem 0.75rem',
+                    background: '#FFFFFF',
+                    border: '1.5px solid #E2E8F0',
+                    borderRadius: '16px',
+                    padding: '1.25rem',
                     display: 'flex',
+                    flexDirection: 'column',
                     justifyContent: 'space-between',
-                    alignItems: 'center',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
                   }}
                 >
-                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '0.9rem', color: '#1A2B49' }}>
-                    {off.code}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleCopyVoucher(off.code)}
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                      <Badge style={{ background: '#EFF6FF', color: '#1D4ED8', fontWeight: 700 }}>
+                        {off.discount_type === 'PERCENTAGE' ? `${off.discount_val}% OFF` : `₹${off.discount_val} OFF`}
+                      </Badge>
+                      <span style={{ fontSize: '0.75rem', color: '#64748B' }}>
+                        Exp: {typeof off.end_date === 'string' ? off.end_date.split('T')[0] : 'Ongoing'}
+                      </span>
+                    </div>
+
+                    <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '0.35rem' }}>
+                      {off.title}
+                    </h4>
+                    <p style={{ fontSize: '0.78rem', color: '#64748B', marginBottom: '0.75rem' }}>
+                      Min order: ₹{off.min_order || 0}
+                    </p>
+                  </div>
+
+                  <div
                     style={{
-                      border: 'none',
-                      background: 'none',
-                      color: copiedCode === off.code ? '#059669' : '#2563EB',
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      cursor: 'pointer',
+                      background: '#FAFAFB',
+                      border: '1px dashed #CBD5E1',
+                      borderRadius: '10px',
+                      padding: '0.5rem 0.75rem',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
                     }}
                   >
-                    {copiedCode === off.code ? 'Copied ✓' : 'Copy Code'}
-                  </button>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '0.9rem', color: '#1A2B49' }}>
+                      {off.code}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyVoucher(off.code)}
+                      style={{
+                        border: 'none',
+                        background: 'none',
+                        color: copiedCode === off.code ? '#059669' : '#2563EB',
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {copiedCode === off.code ? 'Copied ✓' : 'Copy Code'}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </WidgetErrorBoundary>
       </div>
 
       {/* =================================================================
           9. PARTNERED BUSINESSES (SECTION 15)
           ================================================================= */}
       <div id="businesses-section">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <div>
-            <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>
-              Partnered Businesses
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: '#64748B', margin: 0 }}>
-              Visit stores to earn rewards and pay directly via UPI
-            </p>
+        <WidgetErrorBoundary name="Partnered Stores">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1A2B49', margin: 0 }}>
+                Partnered Businesses
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: '#64748B', margin: 0 }}>
+                Visit stores to earn rewards and pay directly via UPI
+              </p>
+            </div>
+            <Link to="/customer/businesses" style={{ fontSize: '0.8rem', color: '#1A2B49', fontWeight: 700, textDecoration: 'none' }}>
+              View All →
+            </Link>
           </div>
-          <Link to="/customer/businesses" style={{ fontSize: '0.8rem', color: '#1A2B49', fontWeight: 700, textDecoration: 'none' }}>
-            View All →
-          </Link>
-        </div>
 
-        {businesses.length === 0 ? (
-          <EmptyState
-            icon={Store}
-            title="No connected businesses yet"
-            description="Scan a ZOOR UP QR code at your favorite local store, cafe, or restaurant to join their loyalty program, collect stamps, and pay via UPI."
-            action={
-              <Link
-                to="/customer/scan-qr"
-                className="btn btn-primary"
-                style={{
-                  background: '#1A2B49',
-                  color: '#FFFFFF',
-                  padding: '8px 18px',
-                  borderRadius: '10px',
-                  fontWeight: 700,
-                  textDecoration: 'none',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                }}
-              >
-                <QrCode size={16} /> Scan QR to Connect
-              </Link>
-            }
-          />
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
-            {businesses.slice(0, 1).map((biz) => (
-              <div
-                key={biz.id}
-                className="card card-hover"
-                style={{
-                  background: '#FFFFFF',
-                  border: '1.5px solid #E2E8F0',
-                  borderRadius: '16px',
-                  overflow: 'hidden',
-                  padding: '1rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.75rem',
-                }}
-              >
-                <img
-                  src={biz.cover_image || 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=600&auto=format&fit=crop&q=80'}
-                  alt={biz.name}
-                  style={{ width: '100%', height: '120px', borderRadius: '12px', objectFit: 'cover' }}
-                />
-                <div>
-                  <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '2px' }}>
-                    {biz.name}
-                  </h4>
-                  <p style={{ fontSize: '0.75rem', color: '#64748B', margin: 0 }}>
-                    {biz.category} • {biz.city}
-                  </p>
-                </div>
+          {businesses.length === 0 ? (
+            <EmptyState
+              icon={Store}
+              title="No connected businesses yet"
+              description="Scan a ZOOR UP QR code at your favorite local store, cafe, or restaurant to join their loyalty program, collect stamps, and pay via UPI."
+              action={
+                <Link
+                  to="/customer/scan-qr"
+                  className="btn btn-primary"
+                  style={{
+                    background: '#1A2B49',
+                    color: '#FFFFFF',
+                    padding: '8px 18px',
+                    borderRadius: '10px',
+                    fontWeight: 700,
+                    textDecoration: 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <QrCode size={16} /> Scan QR to Connect
+                </Link>
+              }
+            />
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
+              {businesses.slice(0, 1).map((biz) => (
+                <div
+                  key={biz.id}
+                  className="card card-hover"
+                  style={{
+                    background: '#FFFFFF',
+                    border: '1.5px solid #E2E8F0',
+                    borderRadius: '16px',
+                    overflow: 'hidden',
+                    padding: '1rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.75rem',
+                  }}
+                >
+                  <img
+                    src={biz.cover_image || 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=600&auto=format&fit=crop&q=80'}
+                    alt={biz.name || 'Store'}
+                    style={{ width: '100%', height: '120px', borderRadius: '12px', objectFit: 'cover' }}
+                  />
+                  <div>
+                    <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', marginBottom: '2px' }}>
+                      {biz.name || 'Store'}
+                    </h4>
+                    <p style={{ fontSize: '0.75rem', color: '#64748B', margin: 0 }}>
+                      {(biz.category && biz.category !== 'None' ? biz.category : 'Store')} • {(biz.city && biz.city !== 'None' ? biz.city : 'Verified')}
+                    </p>
+                  </div>
 
-                <div style={{ display: 'flex', gap: '0.5rem', marginTop: 'auto', paddingTop: '0.5rem', borderTop: '1px solid #F1F5F9' }}>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenUpiModal(biz)}
-                    style={{
-                      flex: 1,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '4px',
-                      padding: '6px 8px',
-                      borderRadius: '8px',
-                      background: '#ECFDF5',
-                      border: '1px solid #A7F3D0',
-                      color: '#047857',
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <Smartphone size={14} /> Pay via UPI
-                  </button>
-                  <Link
-                    to={`/m/${biz.slug}`}
-                    style={{
-                      flex: 1,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '4px',
-                      padding: '6px 8px',
-                      borderRadius: '8px',
-                      background: '#1A2B49',
-                      border: 'none',
-                      color: '#FFFFFF',
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      textDecoration: 'none',
-                    }}
-                  >
-                    Open Menu →
-                  </Link>
+                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: 'auto', paddingTop: '0.5rem', borderTop: '1px solid #F1F5F9' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenUpiModal(biz)}
+                      style={{
+                        flex: 1,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px',
+                        padding: '6px 8px',
+                        borderRadius: '8px',
+                        background: '#ECFDF5',
+                        border: '1px solid #A7F3D0',
+                        color: '#047857',
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Smartphone size={14} /> Pay via UPI
+                    </button>
+                    <Link
+                      to={biz.slug && biz.slug !== 'None' ? `/m/${biz.slug}` : `/b/${biz.id}`}
+                      style={{
+                        flex: 1,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px',
+                        padding: '6px 8px',
+                        borderRadius: '8px',
+                        background: '#1A2B49',
+                        border: 'none',
+                        color: '#FFFFFF',
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        textDecoration: 'none',
+                      }}
+                    >
+                      Open Menu →
+                    </Link>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </WidgetErrorBoundary>
       </div>
 
       {/* =================================================================

@@ -227,8 +227,9 @@ export const notificationService = {
     if (!user) return [];
     const token = authService.getToken();
 
-    // Trigger backend reminder check if connected
-    if (API_BASE_URL && token) {
+    // Trigger backend reminder check if connected and user is admin
+    const userRole = (user?.role || '').toLowerCase();
+    if (API_BASE_URL && token && (userRole === 'admin' || userRole === 'super_admin')) {
       try {
         const resp = await fetch(`${API_BASE_URL}/api/notifications/reminders/trigger-check`, {
           method: 'POST',

@@ -52,10 +52,17 @@ export const PublicBusinessHub = () => {
 
   // Synchronize active tab with URL parameter if present
   useEffect(() => {
-    if (type) {
+    if (type === 'menu' || tableId) {
+      const targetSlug = (business?.slug && business.slug !== 'None' ? business.slug : business?.id) || resolvedIdentifier;
+      navigate(`/menu/${targetSlug}${tableId ? `?table=${tableId}` : ''}`, { replace: true });
+    } else if (type === 'cart') {
+      navigate('/cart');
+    } else if (type === 'checkout') {
+      navigate('/checkout');
+    } else if (type) {
       setActiveTab(type);
     }
-  }, [type]);
+  }, [type, business, resolvedIdentifier, tableId, navigate]);
 
   // Load public business data
   useEffect(() => {

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
 import {
   Award,
   Gift,
@@ -11,11 +12,13 @@ import {
   AlertCircle,
   RefreshCw,
   Copy,
+  Check,
   Ticket
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { RANK_TIERS, loyaltyService } from '../../services/loyaltyService';
 import { customerService } from '../../services/customerService';
+import { businessService } from '../../services/businessService';
 import { Card, CardHeader } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
@@ -25,6 +28,10 @@ import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 
 export const CustomerLoyalty = () => {
+  const { businessId: routeBusinessId } = useParams();
+  const [searchParams] = useSearchParams();
+  const paramBusinessId = routeBusinessId || searchParams.get('business_id') || searchParams.get('store');
+
   const { user, refreshUser } = useAuth();
   const { addToast } = useToast();
 
@@ -40,12 +47,14 @@ export const CustomerLoyalty = () => {
   const [selectedReward, setSelectedReward] = useState(null);
   const [redeeming, setRedeeming] = useState(false);
   const [activeTab, setActiveTab] = useState('REWARDS'); // 'REWARDS' | 'VOUCHERS' | 'TIERS'
+  const [redeemingVoucherId, setRedeemingVoucherId] = useState(null);
+  const [copiedCode, setCopiedCode] = useState(null);
 
   const customerId = user?.customer_id || user?.id;
 
   useEffect(() => {
     loadLoyaltyData();
-  }, [customerId]);
+  }, [customerId, paramBusinessId]);
 
   const loadLoyaltyData = async () => {
     setLoading(true);
@@ -61,19 +70,38 @@ export const CustomerLoyalty = () => {
 
       if (!connectedBusinesses.length) {
         setSelectedBusinessId(null);
-        setPoints(null);
-        setStamps(null);
-        setVisits(null);
-        setRewards([]);
-        setClaimedRewards([]);
+        setPoints(Number(homeData.points ?? homeData.customer?.points ?? 0));
+        setStamps(Number(homeData.stamps ?? homeData.customer?.stamps ?? 0));
+        setVisits(Array.isArray(homeData.visits) ? homeData.visits.length : 0);
+        let allRewards = [];
+        try {
+          allRewards = await loyaltyService.getRewards();
+        } catch (e) {
+          console.warn('Default rewards fetch error:', e);
+        }
+        let claimed = [];
+        if (customerId) {
+          try {
+            claimed = await loyaltyService.getClaimedRewards(customerId);
+          } catch (e) {
+            console.warn('Claimed rewards fetch error:', e);
+          }
+        }
+        setRewards(Array.isArray(allRewards) ? allRewards : []);
+        setClaimedRewards(Array.isArray(claimed) ? claimed : []);
         return;
       }
 
-      const chosenBusinessId = selectedBusinessId && connectedBusinesses.some((biz) => biz.id === selectedBusinessId)
-        ? selectedBusinessId
-        : connectedBusinesses.length >= 1
-          ? connectedBusinesses[0].id
-          : null;
+      const targetParamId = paramBusinessId;
+      const matchedParamBiz = targetParamId ? connectedBusinesses.find((biz) => biz.id === targetParamId || biz.slug === targetParamId) : null;
+
+      const chosenBusinessId = matchedParamBiz?.id
+        ? matchedParamBiz.id
+        : (selectedBusinessId && connectedBusinesses.some((biz) => biz.id === selectedBusinessId))
+          ? selectedBusinessId
+          : connectedBusinesses.length >= 1
+            ? connectedBusinesses[0].id
+            : (targetParamId || null);
 
       setSelectedBusinessId(chosenBusinessId);
 
@@ -170,6 +198,39 @@ export const CustomerLoyalty = () => {
       addToast(err.message || 'Reward redemption failed. Please try again.', 'error');
     } finally {
       setRedeeming(false);
+    }
+  };
+
+  const handleCopyVoucher = (code) => {
+    navigator.clipboard?.writeText(code);
+    setCopiedCode(code);
+    addToast(`Voucher code "${code}" copied to clipboard!`, 'info');
+    setTimeout(() => setCopiedCode(null), 3000);
+  };
+
+  const handleRedeemVoucherAtCounter = async (voucher) => {
+    if (!voucher) return;
+    const vId = voucher.id || voucher.voucher_code || voucher.code;
+    const vCode = voucher.voucher_code || voucher.code || 'Voucher';
+    if (!window.confirm(`Redeem voucher "${vCode}" now at the store counter? This marks it as used.`)) {
+      return;
+    }
+    setRedeemingVoucherId(vId);
+    try {
+      await loyaltyService.redeemReward(vId);
+      addToast(`🎉 Voucher ${vCode} successfully redeemed at counter!`, 'success');
+      setClaimedRewards((prev) =>
+        prev.map((c) => {
+          if ((c.id && c.id === vId) || c.voucher_code === vCode || c.code === vCode) {
+            return { ...c, status: 'REDEEMED' };
+          }
+          return c;
+        })
+      );
+    } catch (err) {
+      addToast(err.message || 'Failed to redeem voucher at counter', 'error');
+    } finally {
+      setRedeemingVoucherId(null);
     }
   };
 
@@ -490,44 +551,86 @@ export const CustomerLoyalty = () => {
             />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-              {claimedRewards.map((claim) => (
-                <div
-                  key={claim.id || claim.code}
-                  className="card"
-                  style={{
-                    background: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '14px',
-                    padding: '1.25rem',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: '1rem',
-                  }}
-                >
-                  <div>
-                    <Badge variant="success" style={{ marginBottom: '0.4rem' }}>
-                      ACTIVE VOUCHER
-                    </Badge>
-                    <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', margin: 0 }}>
-                      {claim.reward_title || claim.title || 'Special Store Voucher'}
-                    </h4>
-                    <p style={{ fontSize: '0.8rem', color: '#64748B', margin: '2px 0 0' }}>
-                      Claimed on: {new Date(claim.claimed_at || claim.created_at || Date.now()).toLocaleDateString()}
-                    </p>
-                  </div>
+              {claimedRewards.map((claim) => {
+                const isRedeemed = String(claim.status || '').toUpperCase() === 'REDEEMED';
+                const vCode = claim.code || claim.voucher_code || 'ZUP-VOUCHER';
+                const vId = claim.id || vCode;
+                return (
+                  <div
+                    key={vId}
+                    className="card"
+                    style={{
+                      background: '#FFFFFF',
+                      border: isRedeemed ? '1px solid #CBD5E1' : '1px solid #E2E8F0',
+                      borderRadius: '14px',
+                      padding: '1.25rem',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: '1rem',
+                      opacity: isRedeemed ? 0.75 : 1,
+                    }}
+                  >
+                    <div>
+                      <Badge variant={isRedeemed ? 'secondary' : 'success'} style={{ marginBottom: '0.4rem' }}>
+                        {isRedeemed ? 'REDEEMED' : 'ACTIVE VOUCHER'}
+                      </Badge>
+                      <h4 style={{ fontSize: '1rem', fontWeight: 700, color: '#1A2B49', margin: 0 }}>
+                        {claim.reward_title || claim.title || 'Special Store Voucher'}
+                      </h4>
+                      <p style={{ fontSize: '0.8rem', color: '#64748B', margin: '2px 0 0' }}>
+                        Claimed on: {new Date(claim.claimed_at || claim.created_at || Date.now()).toLocaleDateString()}
+                      </p>
+                    </div>
 
-                  <div style={{ textAlign: 'right' }}>
-                    <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', textTransform: 'uppercase' }}>
-                      Voucher Code
-                    </span>
-                    <strong style={{ fontFamily: 'monospace', fontSize: '1.1rem', color: '#1A2B49', letterSpacing: '0.05em' }}>
-                      {claim.code || claim.voucher_code || 'ZUP-VOUCHER'}
-                    </strong>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                      <div style={{ textAlign: 'right' }}>
+                        <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', textTransform: 'uppercase' }}>
+                          Voucher Code
+                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <strong style={{ fontFamily: 'monospace', fontSize: '1.1rem', color: isRedeemed ? '#64748B' : '#1A2B49', letterSpacing: '0.05em', textDecoration: isRedeemed ? 'line-through' : 'none' }}>
+                            {vCode}
+                          </strong>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyVoucher(vCode)}
+                            style={{
+                              background: '#F1F5F9',
+                              border: '1px solid #CBD5E1',
+                              borderRadius: '6px',
+                              padding: '3px 6px',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              fontSize: '0.75rem',
+                              cursor: 'pointer',
+                              color: copiedCode === vCode ? '#059669' : '#1A2B49',
+                            }}
+                          >
+                            {copiedCode === vCode ? <Check size={13} /> : <Copy size={13} />}
+                            {copiedCode === vCode ? 'Copied' : 'Copy'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {!isRedeemed ? (
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          loading={redeemingVoucherId === vId}
+                          onClick={() => handleRedeemVoucherAtCounter(claim)}
+                        >
+                          Redeem at Counter
+                        </Button>
+                      ) : (
+                        <Badge variant="secondary">Used</Badge>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

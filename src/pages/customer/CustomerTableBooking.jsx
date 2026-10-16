@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Calendar,
   Clock,
@@ -14,10 +14,13 @@ import {
   MapPin,
   Check,
   Plus,
-  UserCheck
+  UserCheck,
+  QrCode,
+  RefreshCw
 } from 'lucide-react';
 import { tableBookingService, BOOKING_STATUSES } from '../../services/tableBookingService';
 import { customerService } from '../../services/customerService';
+import { businessService } from '../../services/businessService';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { Button } from '../../components/ui/Button';
@@ -27,9 +30,14 @@ import { Tabs } from '../../components/ui/Controls';
 import { LoadingState, EmptyState } from '../../components/ui/States';
 
 export const CustomerTableBooking = () => {
-  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { user, loading: authLoading } = useAuth();
   const { addToast } = useToast();
   const customerId = user?.customer_id || user?.id;
+
+  const paramBusinessId = searchParams.get('business_id') || searchParams.get('store');
+  const paramTableId = searchParams.get('table') || searchParams.get('table_id');
 
   const [activeTab, setActiveTab] = useState('BOOK'); // BOOK | MY_RESERVATIONS
   const [loading, setLoading] = useState(true);
@@ -57,27 +65,63 @@ export const CustomerTableBooking = () => {
   const [bookingFilter, setBookingFilter] = useState('ALL'); // ALL | UPCOMING | PAST | CANCELLED
 
   useEffect(() => {
-    loadInitialData();
-  }, [customerId]);
+    if (!authLoading) {
+      loadInitialData();
+    }
+  }, [customerId, authLoading, paramBusinessId]);
 
   const loadInitialData = async () => {
     setLoading(true);
     try {
-      // Use customer home endpoint which returns only connected businesses
-      const homeData = await customerService.getCustomerHome();
-      const connectedBusinesses = (homeData?.businesses || []).filter(b => b?.id);
-      const bookingsList = await tableBookingService.getCustomerBookings(customerId);
-      const prof = await customerService.getProfile(user);
+      const [homeRes, bookingsRes, profRes, allBizRes] = await Promise.allSettled([
+        customerService.getCustomerHome(),
+        customerId ? tableBookingService.getCustomerBookings(customerId) : Promise.resolve([]),
+        customerService.getProfile(user),
+        businessService.getAllBusinesses()
+      ]);
+
+      const homeData = homeRes.status === 'fulfilled' ? homeRes.value : null;
+      let connectedList = (homeData?.businesses || []).filter(b => b?.id);
+      let publicList = (allBizRes.status === 'fulfilled' && Array.isArray(allBizRes.value)) ? allBizRes.value : [];
+
+      // Deduplicate businesses by id
+      const seenIds = new Set();
+      const combined = [];
+      for (const b of [...connectedList, ...publicList]) {
+        if (b?.id && !seenIds.has(b.id)) {
+          seenIds.add(b.id);
+          combined.push(b);
+        }
+      }
+
+      // If a specific business was requested in query params, ensure it's loaded
+      let targetBiz = null;
+      if (paramBusinessId) {
+        targetBiz = combined.find(b => b.id === paramBusinessId || b.slug === paramBusinessId);
+        if (!targetBiz) {
+          try {
+            const fetched = await businessService.getBusiness(paramBusinessId);
+            if (fetched?.id) {
+              combined.unshift(fetched);
+              targetBiz = fetched;
+            }
+          } catch (_) {}
+        }
+      }
+
+      const bookingsList = bookingsRes.status === 'fulfilled' ? (bookingsRes.value || []) : [];
+      const prof = profRes.status === 'fulfilled' ? profRes.value : null;
       
-      setBusinesses(connectedBusinesses);
-      if (connectedBusinesses.length > 0 && !selectedBusiness) {
-        setSelectedBusiness(connectedBusinesses[0]);
+      setBusinesses(combined);
+      if (targetBiz) {
+        setSelectedBusiness(targetBiz);
+      } else if (combined.length > 0 && !selectedBusiness) {
+        setSelectedBusiness(combined[0]);
       }
       setMyBookings(bookingsList);
       setCustomerProfile(prof);
     } catch (err) {
-      console.error(err);
-      addToast('Error loading booking data', 'error');
+      console.warn('Initial data load notice:', err);
     } finally {
       setLoading(false);
     }
@@ -111,9 +155,14 @@ export const CustomerTableBooking = () => {
       ]);
       setBusinessTablesTotal(allTables.length);
       setAvailableTables(tables);
-      // Auto-select first matching table if available
+
+      // Preselect paramTableId if specified, or auto-select first available table
       if (tables.length > 0) {
-        setSelectedTable(tables[0]);
+        if (paramTableId && tables.some(t => t.id === paramTableId)) {
+          setSelectedTable(tables.find(t => t.id === paramTableId));
+        } else {
+          setSelectedTable(tables[0]);
+        }
       } else {
         setSelectedTable(null);
       }
@@ -126,6 +175,7 @@ export const CustomerTableBooking = () => {
 
   const handleConfirmReservation = async (e) => {
     e.preventDefault();
+    if (submitting) return;
     if (!selectedBusiness) {
       addToast('Please select a business', 'error');
       return;
@@ -398,17 +448,26 @@ export const CustomerTableBooking = () => {
             {businesses.length === 0 ? (
               <EmptyState
                 icon={Store}
-                title="No connected businesses available for table booking."
-                description="Scan a ZOOR UP QR code at a restaurant to connect and start booking tables."
+                title="No dining stores available for table booking"
+                description="Explore local partner restaurants on ZOOR UP or scan a dining table QR code."
                 action={
-                  <Button
-                    variant="primary"
-                    onClick={() => navigate('/customer/scan-qr')}
-                    icon={QrCode}
-                    style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
-                  >
-                    Scan Restaurant QR to Connect
-                  </Button>
+                  <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+                    <Button
+                      variant="primary"
+                      onClick={() => navigate('/customer/businesses')}
+                      icon={Store}
+                      style={{ background: '#1A2B49', color: '#FFFFFF', fontWeight: 700 }}
+                    >
+                      Discover Stores
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => navigate('/customer/scan-qr')}
+                      icon={QrCode}
+                    >
+                      Scan QR Code
+                    </Button>
+                  </div>
                 }
               />
             ) : (

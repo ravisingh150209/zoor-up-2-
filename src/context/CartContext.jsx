@@ -4,7 +4,7 @@ const CartContext = createContext(null);
 
 const readStoredCart = () => {
   if (typeof localStorage === 'undefined') {
-    return { items: [], businessId: '', businessSlug: '', businessName: '' };
+    return { items: [], businessId: '', businessSlug: '', businessName: '', tableId: '' };
   }
   try {
     const stored = localStorage.getItem('zoorup_cart');
@@ -15,12 +15,13 @@ const readStoredCart = () => {
         businessId: parsed.businessId || '',
         businessSlug: parsed.businessSlug || '',
         businessName: parsed.businessName || '',
+        tableId: parsed.tableId || '',
       };
     }
   } catch (e) {
     console.warn('[CART STORAGE] Parse error:', e);
   }
-  return { items: [], businessId: '', businessSlug: '', businessName: '' };
+  return { items: [], businessId: '', businessSlug: '', businessName: '', tableId: '' };
 };
 
 export const CartProvider = ({ children }) => {
@@ -29,6 +30,7 @@ export const CartProvider = ({ children }) => {
   const [businessId, setBusinessId] = useState(initialCart.businessId);
   const [businessSlug, setBusinessSlug] = useState(initialCart.businessSlug);
   const [businessName, setBusinessName] = useState(initialCart.businessName);
+  const [tableId, setTableId] = useState(initialCart.tableId);
 
   // Synchronize across tabs or native WebView storage injections
   useEffect(() => {
@@ -39,6 +41,7 @@ export const CartProvider = ({ children }) => {
           setBusinessId('');
           setBusinessSlug('');
           setBusinessName('');
+          setTableId('');
           return;
         }
         try {
@@ -47,6 +50,7 @@ export const CartProvider = ({ children }) => {
           if (parsed.businessId !== undefined) setBusinessId(parsed.businessId);
           if (parsed.businessSlug !== undefined) setBusinessSlug(parsed.businessSlug);
           if (parsed.businessName !== undefined) setBusinessName(parsed.businessName);
+          if (parsed.tableId !== undefined) setTableId(parsed.tableId);
         } catch {}
       }
     };
@@ -54,15 +58,17 @@ export const CartProvider = ({ children }) => {
     return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
-  const saveCart = (newItems, bId, slug, bName) => {
+  const saveCart = (newItems, bId, slug, bName, tblId) => {
     setItems(newItems);
     const finalBId = bId !== undefined ? bId : businessId;
     const finalSlug = slug !== undefined ? slug : businessSlug;
     const finalBName = bName !== undefined ? bName : businessName;
+    const finalTableId = tblId !== undefined ? tblId : tableId;
 
     if (finalBId !== undefined) setBusinessId(finalBId);
     if (finalSlug !== undefined) setBusinessSlug(finalSlug);
     if (finalBName !== undefined) setBusinessName(finalBName);
+    if (finalTableId !== undefined) setTableId(finalTableId);
 
     try {
       localStorage.setItem('zoorup_cart', JSON.stringify({
@@ -70,6 +76,7 @@ export const CartProvider = ({ children }) => {
         businessId: finalBId,
         businessSlug: finalSlug,
         businessName: finalBName,
+        tableId: finalTableId,
       }));
     } catch (err) {
       console.warn('[CART] Failed to write localStorage:', err);
@@ -161,7 +168,7 @@ export const CartProvider = ({ children }) => {
   };
 
   const clearCart = () => {
-    saveCart([], '', '', '');
+    saveCart([], '', '', '', '');
   };
 
   const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
@@ -174,6 +181,8 @@ export const CartProvider = ({ children }) => {
         businessId,
         businessSlug,
         businessName,
+        tableId,
+        setTableId,
         setBusinessSlug,
         setBusinessId,
         setBusinessName,

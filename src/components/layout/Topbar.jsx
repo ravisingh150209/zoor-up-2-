@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Menu, Bell, User, LogOut, ChevronDown, Sparkles, Store, Shield, Truck, QrCode } from 'lucide-react';
+import { Menu, Bell, User, LogOut, ChevronDown, Sparkles, Store, Shield, Truck, QrCode, ShoppingBag } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useCart } from '../../context/CartContext';
 import { Avatar } from '../ui/Avatar';
 import { Badge } from '../ui/Badge';
 import { ZoorUpLogo } from '../ui/ZoorUpLogo';
@@ -9,6 +10,7 @@ import { notificationService } from '../../services/notificationService';
 
 export const Topbar = ({ onMenuClick, collapsed = false, onToggleCollapse, title = 'Dashboard' }) => {
   const { user, logout } = useAuth();
+  const { totalCount = 0 } = useCart() || {};
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const navigate = useNavigate();
@@ -138,6 +140,52 @@ export const Topbar = ({ onMenuClick, collapsed = false, onToggleCollapse, title
           </Link>
         )}
 
+        {/* Cart Icon with badge when items in cart */}
+        {totalCount > 0 && (
+          <Link
+            to="/cart"
+            className="btn-ghost"
+            style={{
+              position: 'relative',
+              width: '38px',
+              height: '38px',
+              minWidth: '38px',
+              minHeight: '38px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '4px',
+              borderRadius: 'var(--radius-md)',
+              color: 'var(--text-primary)',
+            }}
+            aria-label="View Cart"
+            title={`Cart (${totalCount} items)`}
+          >
+            <ShoppingBag size={18} />
+            <span
+              style={{
+                position: 'absolute',
+                top: '4px',
+                right: '4px',
+                minWidth: '16px',
+                height: '16px',
+                padding: '0 4px',
+                borderRadius: '8px',
+                background: '#059669',
+                color: '#FFFFFF',
+                fontSize: '0.65rem',
+                fontWeight: 800,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                lineHeight: 1,
+              }}
+            >
+              {totalCount}
+            </span>
+          </Link>
+        )}
+
         {/* Notifications Icon */}
         <Link
           to={user?.role === 'business' ? '/business/notifications' : '/customer/notifications'}
@@ -246,6 +294,44 @@ export const Topbar = ({ onMenuClick, collapsed = false, onToggleCollapse, title
                 </p>
               </div>
 
+              {((user?.role || '').toLowerCase() === 'business' || (user?.role || '').toLowerCase() === 'business_owner') && (
+                <Link
+                  to="/business/profile"
+                  onClick={() => setDropdownOpen(false)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    padding: '0.5rem',
+                    fontSize: '0.825rem',
+                    color: 'var(--text-primary)',
+                    borderRadius: 'var(--radius-sm)',
+                    textDecoration: 'none',
+                  }}
+                >
+                  <Store size={14} />
+                  <span>Store Profile & Social Links</span>
+                </Link>
+              )}
+              {((user?.role || '').toLowerCase() === 'customer') && (
+                <Link
+                  to="/customer/profile"
+                  onClick={() => setDropdownOpen(false)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    padding: '0.5rem',
+                    fontSize: '0.825rem',
+                    color: 'var(--text-primary)',
+                    borderRadius: 'var(--radius-sm)',
+                    textDecoration: 'none',
+                  }}
+                >
+                  <User size={14} />
+                  <span>My Profile</span>
+                </Link>
+              )}
 
               <button
                 onClick={handleLogout}

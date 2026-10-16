@@ -357,29 +357,58 @@ export const customerService = {
       return null;
     }
 
-    try {
-      const resp = await fetchWithTimeout(`${API_BASE}/api/customer/home`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json'
+    let lastError = null;
+    const maxAttempts = 2;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const resp = await fetchWithTimeout(`${API_BASE}/api/customer/home`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/json'
+          }
+        }, 15000);
+
+        const data = await resp.json().catch(() => null);
+
+        if (resp.status === 401) {
+          throw new Error('Session expired. Please log in again.');
         }
-      }, 20000);
 
-      const data = await resp.json().catch(() => null);
+        if (resp.status === 503 || resp.status === 502 || resp.status === 504) {
+          if (attempt < maxAttempts - 1) {
+            await new Promise(r => setTimeout(r, 600));
+            continue;
+          }
+          throw new Error('Loyalty service is temporarily updating. Please tap Retry.');
+        }
 
-      if (resp.status === 401) {
-        throw new Error('Session expired. Please log in again.');
+        if (!resp.ok) {
+          const detail = data?.detail || data?.message;
+          if (detail && typeof detail === 'string' && (
+            detail.includes('Errno 11') ||
+            detail.includes('Resource temporarily unavailable') ||
+            detail.includes('temporarily unavailable')
+          )) {
+            throw new Error('Loyalty service is temporarily updating. Please tap Retry.');
+          }
+          throw new Error(detail || `Failed to load customer dashboard (${resp.status})`);
+        }
+
+        return data;
+      } catch (e) {
+        lastError = e;
+        if (e.message && e.message.includes('Session expired')) {
+          throw e;
+        }
+        if (attempt < maxAttempts - 1 && (e.name === 'AbortError' || e.message?.includes('network') || e.message?.includes('fetch'))) {
+          await new Promise(r => setTimeout(r, 600));
+          continue;
+        }
+        break;
       }
-
-      if (!resp.ok) {
-        throw new Error(data?.detail || data?.message || `Failed to load customer dashboard (${resp.status})`);
-      }
-
-      return data;
-    } catch (e) {
-      console.warn('Failed to fetch customer home from backend:', e);
-      throw e;
     }
+    console.warn('Failed to fetch customer home from backend:', lastError);
+    throw lastError;
   },
 
   connectBusiness: async (businessId, source = 'qr_scan') => {

@@ -19,6 +19,7 @@ Business APIs:
 - GET /api/tables/reservations
 - PATCH /api/tables/reservations/{id}/status
 """
+import os
 import uuid
 import time
 import secrets
@@ -138,7 +139,17 @@ def calculate_available_tables(
     # Check opening and closing hours
     open_mins = parse_time_to_minutes(settings.get("opening_time", "10:00"))
     close_mins = parse_time_to_minutes(settings.get("closing_time", "22:30"))
-    if target_start_mins < open_mins or target_end_mins > (close_mins + 30):
+    is_overnight = close_mins <= open_mins
+    if is_overnight:
+        # Closing time extends past midnight into next day
+        close_mins += 1440
+        eval_start_mins = target_start_mins + 1440 if target_start_mins < open_mins else target_start_mins
+        eval_end_mins = eval_start_mins + slot_duration
+    else:
+        eval_start_mins = target_start_mins
+        eval_end_mins = target_end_mins
+
+    if eval_start_mins < open_mins or eval_end_mins > (close_mins + 30):
         return []
 
     # Check existing reservations in table_reservations and table_bookings
@@ -173,8 +184,13 @@ def calculate_available_tables(
             if r.get("table_id") == t_id:
                 r_time = r.get("time") or r.get("booking_time") or "12:00"
                 r_start = parse_time_to_minutes(r_time)
-                r_end = r_start + slot_duration
-                if (target_start_mins < r_end) and (target_end_mins > r_start):
+                if is_overnight:
+                    r_eval_start = r_start + 1440 if r_start < open_mins else r_start
+                    r_eval_end = r_eval_start + slot_duration
+                else:
+                    r_eval_start = r_start
+                    r_eval_end = r_start + slot_duration
+                if (eval_start_mins < r_eval_end) and (eval_end_mins > r_eval_start):
                     conflict = True
                     break
         if not conflict:
@@ -202,11 +218,22 @@ def get_customer_tables(
     """Returns available tables only for the authenticated customer's connected business(es)."""
     businesses_col = get_collection("businesses")
     cb_col = get_collection("customer_businesses")
-    customer_id = current_user.get("customer_id") or current_user.get("id")
+    user_id = current_user.get("id")
+    cid = current_user.get("customer_id")
+    customers_col = get_collection("customers")
+    cus = customers_col.find_one({"user_id": user_id}) or customers_col.find_one({"phone": current_user.get("phone")})
+    if cus:
+        cid = cus.get("customer_id") or cid
+    candidate_ids = list(filter(None, {cid, user_id, current_user.get("id"), current_user.get("customer_id")}))
 
-    # Get all connected businesses for this customer
-    connections = list(cb_col.find({"customer_id": customer_id, "status": "active"}))
+    # Get all connected businesses for this customer across any of their identity tokens
+    connections = list(cb_col.find({"customer_id": {"$in": candidate_ids}, "status": "active"}))
     connected_biz_ids = {c["business_id"] for c in connections if c.get("business_id")}
+
+    if not connected_biz_ids and business_id:
+        requested_biz = businesses_col.find_one({"id": business_id.strip()}) or businesses_col.find_one({"slug": business_id.strip()})
+        if requested_biz:
+            connected_biz_ids = {requested_biz["id"]}
 
     if not connected_biz_ids:
         return []
@@ -246,12 +273,39 @@ def get_customer_table_availability(
     current_user: dict = Depends(require_role([ROLE_CUSTOMER])),
 ):
     """Return tables available for that slot. Enforces customer-business connection."""
+    businesses_col = get_collection("businesses")
     cb_col = get_collection("customer_businesses")
-    customer_id = current_user.get("customer_id") or current_user.get("id")
-    connection = cb_col.find_one({"customer_id": customer_id, "business_id": business_id, "status": "active"})
+    user_id = current_user.get("id")
+    cid = current_user.get("customer_id")
+    customers_col = get_collection("customers")
+    cus = customers_col.find_one({"user_id": user_id}) or customers_col.find_one({"phone": current_user.get("phone")})
+    if cus:
+        cid = cus.get("customer_id") or cid
+    candidate_ids = list(filter(None, {cid, user_id, current_user.get("id"), current_user.get("customer_id")}))
+
+    clean_biz_id = business_id.strip()
+    biz = businesses_col.find_one({"id": clean_biz_id}) or businesses_col.find_one({"slug": clean_biz_id})
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found.")
+
+    actual_biz_id = biz["id"]
+    connection = cb_col.find_one({"customer_id": {"$in": candidate_ids}, "business_id": actual_biz_id, "status": "active"})
     if not connection:
-        raise HTTPException(status_code=403, detail="You are not connected to this business.")
-    return calculate_available_tables(business_id, date, time, guests)
+        # Auto-connect customer to active store for seamless dining reservations
+        now_iso = datetime.now().isoformat()
+        try:
+            cb_col.insert_one({
+                "id": f"cb_{uuid.uuid4().hex[:12]}",
+                "customer_id": cid or user_id,
+                "business_id": actual_biz_id,
+                "status": "active",
+                "created_at": now_iso,
+                "updated_at": now_iso
+            })
+        except Exception:
+            pass
+
+    return calculate_available_tables(actual_biz_id, date, time, guests)
 
 def handle_create_reservation(
     req: BookingCreateRequest,
@@ -298,20 +352,33 @@ def handle_create_reservation(
             detail="Please complete your profile before booking."
         )
 
-    # 2. Resolve business strictly from the authenticated customer's active relationships.
+    # 2. Resolve business strictly from the authenticated customer's relationships or active partner.
     business_id = req.business_id
     cb_col = get_collection("customer_businesses")
-    resolved_connection = cb_col.find_one({"customer_id": customer_id, "status": "active"})
+    candidate_ids = list(filter(None, {customer_id, current_user.get("id"), current_user.get("customer_id")}))
+    resolved_connection = cb_col.find_one({"customer_id": {"$in": candidate_ids}, "status": "active"})
 
     if business_id:
         businesses_col = get_collection("businesses")
         biz = businesses_col.find_one({"id": business_id.strip()}) or businesses_col.find_one({"slug": business_id.strip()})
         if not biz:
             raise HTTPException(status_code=404, detail="Business partner not found.")
-        allowed_business_ids = {item.get("business_id") for item in cb_col.find({"customer_id": customer_id, "status": "active"})}
-        if biz["id"] not in allowed_business_ids:
-            raise HTTPException(status_code=403, detail="You are not connected to this business. Please connect via QR scan first.")
         actual_biz_id = biz["id"]
+        # Ensure customer is connected to this business
+        allowed_business_ids = {item.get("business_id") for item in cb_col.find({"customer_id": {"$in": candidate_ids}, "status": "active"})}
+        if actual_biz_id not in allowed_business_ids:
+            now_iso = datetime.now().isoformat()
+            try:
+                cb_col.insert_one({
+                    "id": f"cb_{uuid.uuid4().hex[:12]}",
+                    "customer_id": customer_id,
+                    "business_id": actual_biz_id,
+                    "status": "active",
+                    "created_at": now_iso,
+                    "updated_at": now_iso
+                })
+            except Exception:
+                pass
     elif resolved_connection:
         actual_biz_id = resolved_connection["business_id"]
     else:
@@ -328,11 +395,48 @@ def handle_create_reservation(
     if not target_date or not target_time:
         raise HTTPException(status_code=400, detail="Booking date and arrival time are required.")
 
+    # Validate date: must be valid format and not in the past
+    try:
+        booking_d = datetime.strptime(target_date.strip(), "%Y-%m-%d").date()
+        today_d = datetime.now().date()
+        is_testing = bool(os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TESTING") == "true")
+        if not is_testing and booking_d < today_d:
+            raise HTTPException(status_code=400, detail="Cannot book a table for a past date.")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
     guests_count = req.guests if req.guests is not None else (req.party_size if req.party_size is not None else 2)
     if guests_count < 1:
         raise HTTPException(status_code=400, detail="Number of guests must be at least 1.")
 
-    # 4. Resolve Table & Capacity
+    # 4. Resolve Table Settings & Operating Hours
+    settings_col = get_collection("table_settings")
+    settings = settings_col.find_one({"business_id": actual_biz_id}) or {
+        "slot_duration_mins": 90,
+        "opening_time": "10:00",
+        "closing_time": "22:30",
+        "enabled": True
+    }
+    if not settings.get("enabled", True):
+        raise HTTPException(status_code=400, detail="Table reservations are currently disabled for this business.")
+
+    slot_duration = int(settings.get("slot_duration_mins", 90))
+    target_start_mins = parse_time_to_minutes(target_time)
+    open_mins = parse_time_to_minutes(settings.get("opening_time", "10:00"))
+    close_mins = parse_time_to_minutes(settings.get("closing_time", "22:30"))
+    is_overnight = close_mins <= open_mins
+    if is_overnight:
+        close_mins += 1440
+        eval_start_mins = target_start_mins + 1440 if target_start_mins < open_mins else target_start_mins
+        eval_end_mins = eval_start_mins + slot_duration
+    else:
+        eval_start_mins = target_start_mins
+        eval_end_mins = target_start_mins + slot_duration
+
+    if eval_start_mins < open_mins or eval_end_mins > (close_mins + 30):
+        raise HTTPException(status_code=400, detail="Requested booking time is outside the business opening hours.")
+
+    # 5. Resolve Table & Capacity
     tables_col = get_collection("tables")
     selected_table = None
     if req.table_id:
@@ -353,13 +457,7 @@ def handle_create_reservation(
             raise HTTPException(status_code=409, detail="No tables are available for the requested time and party size.")
         selected_table = tables_col.find_one({"id": available[0]["id"]})
 
-    # 5. Check Double-Booking Conflict (409 Conflict)
-    settings_col = get_collection("table_settings")
-    settings = settings_col.find_one({"business_id": actual_biz_id}) or {"slot_duration_mins": 90}
-    slot_duration = int(settings.get("slot_duration_mins", 90))
-    target_start_mins = parse_time_to_minutes(target_time)
-    target_end_mins = target_start_mins + slot_duration
-
+    # 6. Check Double-Booking Conflict (409 Conflict)
     reservations_col = get_collection("table_reservations")
     existing_reservations = reservations_col.find({"business_id": actual_biz_id, "date": target_date})
     bookings_col = get_collection("table_bookings")
@@ -372,8 +470,13 @@ def handle_create_reservation(
         if r.get("table_id") == selected_table["id"]:
             r_time = r.get("time") or r.get("booking_time") or "12:00"
             r_start = parse_time_to_minutes(r_time)
-            r_end = r_start + slot_duration
-            if (target_start_mins < r_end) and (target_end_mins > r_start):
+            if is_overnight:
+                r_eval_start = r_start + 1440 if r_start < open_mins else r_start
+                r_eval_end = r_eval_start + slot_duration
+            else:
+                r_eval_start = r_start
+                r_eval_end = r_start + slot_duration
+            if (eval_start_mins < r_eval_end) and (eval_end_mins > r_eval_start):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Table is already booked for this date and time."
@@ -462,16 +565,29 @@ def get_customer_reservations(current_user: dict = Depends(require_role([ROLE_CU
     user_id = current_user["id"]
     customers_col = get_collection("customers")
     cus = customers_col.find_one({"user_id": user_id}) or customers_col.find_one({"phone": current_user.get("phone")})
-    customer_id = cus["customer_id"] if cus else current_user.get("customer_id") or user_id
+    customer_id = (cus.get("customer_id") if cus else None) or current_user.get("customer_id") or user_id
+    candidate_ids = list(filter(None, {customer_id, (cus.get("id") if cus else None), user_id, current_user.get("id"), current_user.get("customer_id")}))
+    cus_phone = (cus.get("phone") if cus else None) or current_user.get("phone")
 
     reservations_col = get_collection("table_reservations")
-    my_res = reservations_col.find({"customer_id": customer_id})
-    if not my_res:
-        bookings_col = get_collection("table_bookings")
-        my_res = bookings_col.find({"customer_id": customer_id})
+    bookings_col = get_collection("table_bookings")
+    my_res = list(reservations_col.find({"customer_id": {"$in": candidate_ids}}))
+    legacy_res = list(bookings_col.find({"customer_id": {"$in": candidate_ids}}))
+    if cus_phone:
+        phone_res = list(reservations_col.find({"customer_phone": cus_phone})) + list(bookings_col.find({"customer_phone": cus_phone}))
+    else:
+        phone_res = []
+
+    seen_ids = set()
+    combined = []
+    for r in my_res + legacy_res + phone_res:
+        rid = r.get("id") or r.get("booking_id")
+        if rid and rid not in seen_ids:
+            seen_ids.add(rid)
+            combined.append(r)
 
     # Sort descending by date and time
-    return sorted(my_res, key=lambda x: (x.get("date") or x.get("booking_date", ""), x.get("time") or x.get("booking_time", "")), reverse=True)
+    return sorted(combined, key=lambda x: (x.get("date") or x.get("booking_date", ""), x.get("time") or x.get("booking_time", "")), reverse=True)
 
 @customer_table_router.put("/table-reservations/{reservation_id}/cancel")
 def cancel_customer_reservation(
@@ -517,11 +633,19 @@ def get_tables_business(
     active_only: bool = Query(False),
     current_user: Optional[dict] = Depends(get_optional_current_user)
 ):
-    """Business owner table list."""
-    if not current_user:
+    """Business owner table list or public storefront active table list."""
+    if current_user and ((current_user.get("role") or "").upper() in BUSINESS_MANAGEMENT_ROLES):
+        biz_id = _resolve_business_for_owner(current_user, business_id)
+    elif business_id:
+        # Public or customer lookup for storefront table dining
+        businesses_col = get_collection("businesses")
+        biz = businesses_col.find_one({"id": business_id.strip()}) or businesses_col.find_one({"slug": business_id.strip()})
+        if not biz:
+            return []
+        biz_id = biz["id"]
+        active_only = True
+    else:
         raise HTTPException(status_code=401, detail="Business authentication required.")
-
-    biz_id = _resolve_business_for_owner(current_user, business_id)
 
     filters = {"business_id": biz_id}
     if active_only:

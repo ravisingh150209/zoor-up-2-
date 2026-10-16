@@ -1,14 +1,33 @@
+const sanitizeErrorMessage = (msg, fallback) => {
+  if (!msg || typeof msg !== 'string') return fallback;
+  const clean = msg.trim();
+  if (
+    clean.includes('Errno 11') ||
+    clean.includes('Resource temporarily unavailable') ||
+    clean.includes('EAGAIN') ||
+    clean.includes('EWOULDBLOCK') ||
+    clean.includes('Database resource temporarily unavailable') ||
+    clean.includes('temporarily unavailable')
+  ) {
+    return 'Loyalty service is temporarily updating. Please tap Retry.';
+  }
+  if (clean.includes('Failed to fetch') || clean.includes('NetworkError') || clean.includes('Load failed')) {
+    return 'Connection temporarily interrupted. Please tap Retry.';
+  }
+  return clean;
+};
+
 /**
  * Safe error message extractor for ZOOR UP
  * Prevents [object Object] errors in UI
  */
 export const getErrorMessage = (error, fallback = 'An unexpected error occurred') => {
   if (!error) return fallback;
-  if (typeof error === 'string') return error;
+  if (typeof error === 'string') return sanitizeErrorMessage(error, fallback);
 
   // Handle standard Error object
   if (error instanceof Error && error.message) {
-    return error.message;
+    return sanitizeErrorMessage(error.message, fallback);
   }
 
   // Recursively extract message from nested objects with priority order
@@ -121,7 +140,7 @@ export const getErrorMessage = (error, fallback = 'An unexpected error occurred'
   };
 
   const extracted = extractFromObject(error);
-  if (extracted) return extracted;
+  if (extracted) return sanitizeErrorMessage(extracted, fallback);
 
   // Handle arrays of errors (e.g., validation errors)
   if (Array.isArray(error)) {

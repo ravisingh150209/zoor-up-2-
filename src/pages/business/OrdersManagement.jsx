@@ -80,12 +80,15 @@ export const OrdersManagement = () => {
 
   const columns = [
     {
-      header: 'Order ID',
+      header: 'Order ID & Time',
       accessor: 'id',
       render: (id, row) => (
         <div>
-          <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--primary-400)' }}>{id}</strong>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--primary-400)', fontSize: '0.9rem' }}>
+            #{id}
+          </strong>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+            {new Date(row.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })},{' '}
             {new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </div>
         </div>
@@ -96,31 +99,76 @@ export const OrdersManagement = () => {
       accessor: 'customer_name',
       render: (name, row) => (
         <div>
-          <div style={{ fontWeight: 600 }}>{name}</div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{row.customer_phone}</div>
+          <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{name || 'Guest Customer'}</div>
+          {row.customer_phone ? (
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '3px', marginTop: '2px' }}>
+              <Phone size={12} />
+              <span>{row.customer_phone}</span>
+            </div>
+          ) : (
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No phone</div>
+          )}
         </div>
       ),
     },
     {
-      header: 'Type & Items',
-      accessor: 'order_type',
-      render: (type, row) => (
-        <div>
-          <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{type}</span>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            {row.items?.length || 0} item(s)
+      header: 'Ordered Products',
+      accessor: 'items',
+      render: (items, row) => {
+        const orderItems = Array.isArray(items) ? items : [];
+        const totalItemsCount = orderItems.reduce((acc, it) => acc + (Number(it.quantity) || 1), 0);
+        if (orderItems.length === 0) {
+          return (
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+              <span>{row.order_type || 'Order'} (0 items)</span>
+            </div>
+          );
+        }
+        return (
+          <div style={{ minWidth: '220px', maxWidth: '320px', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+            {orderItems.map((item, idx) => {
+              const pName = item.name || item.product_name || `Product #${item.product_id || item.id || idx + 1}`;
+              const qty = Number(item.quantity) || 1;
+              const price = Number(item.price ?? item.unit_price ?? 0);
+              const lineTotal = Number(item.subtotal ?? item.line_total ?? (price * qty));
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    fontSize: '0.8rem',
+                    lineHeight: '1.3',
+                    paddingBottom: idx < orderItems.length - 1 ? '0.3rem' : 0,
+                    borderBottom: idx < orderItems.length - 1 ? '1px dashed var(--border-subtle, #E2E8F0)' : 'none',
+                  }}
+                >
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', wordBreak: 'break-word' }}>
+                    {idx + 1}. {pName}
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                    Qty: <strong>{qty}</strong> × ₹{price.toLocaleString()} = <strong style={{ color: 'var(--text-primary)' }}>₹{lineTotal.toLocaleString()}</strong>
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.1rem', display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+              <span style={{ fontWeight: 600 }}>Total Items: {totalItemsCount}</span>
+              <span>•</span>
+              <span>{row.order_type || 'Store'} {row.table_number ? `(Table ${row.table_number})` : ''}</span>
+            </div>
           </div>
-        </div>
-      ),
+        );
+      },
     },
     {
-      header: 'Total',
+      header: 'Total & Payment',
       accessor: 'total',
       render: (total, row) => (
         <div>
-          <strong style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>₹{total}</strong>
-          <div style={{ fontSize: '0.725rem', color: row.payment_status === 'PAID' ? 'var(--accent-emerald)' : 'var(--accent-amber)' }}>
-            ● {row.payment_status} ({row.payment_method})
+          <strong style={{ color: 'var(--text-primary)', fontSize: '0.95rem' }}>
+            ₹{Number(total || row.total_amount || 0).toLocaleString()}
+          </strong>
+          <div style={{ fontSize: '0.725rem', marginTop: '2px', color: row.payment_status === 'PAID' ? 'var(--accent-emerald, #059669)' : 'var(--accent-amber, #D97706)' }}>
+            ● {row.payment_status || 'PENDING'} ({row.payment_method || 'CASH'})
           </div>
         </div>
       ),
@@ -138,7 +186,7 @@ export const OrdersManagement = () => {
       accessor: 'id',
       align: 'right',
       render: (_, row) => (
-        <div style={{ display: 'flex', gap: '0.35rem', justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: '0.35rem', justifyContent: 'flex-end', alignItems: 'center' }}>
           {row.status === 'NEW' && (
             <Button
               variant="primary"
@@ -190,6 +238,7 @@ export const OrdersManagement = () => {
           <Button
             variant="ghost"
             size="sm"
+            title="View Order Details"
             onClick={(e) => {
               e.stopPropagation();
               setSelectedOrder(row);
@@ -219,6 +268,7 @@ export const OrdersManagement = () => {
         tabs={[
           { id: 'ALL', label: 'All Orders' },
           { id: 'NEW', label: 'New Orders' },
+          { id: 'CONFIRMED', label: 'Confirmed' },
           { id: 'PREPARING', label: 'Preparing' },
           { id: 'READY', label: 'Ready for Dispatch' },
           { id: 'COMPLETED', label: 'Completed' },
@@ -229,7 +279,7 @@ export const OrdersManagement = () => {
       <SearchBar
         value={search}
         onChange={setSearch}
-        placeholder="Search Order ID (#ORD-...), customer name, or phone..."
+        placeholder="Search Order ID (#ORD-...), product name, customer name, or phone..."
       />
 
       {loading ? (
@@ -255,8 +305,8 @@ export const OrdersManagement = () => {
         <Modal
           isOpen={Boolean(selectedOrder)}
           onClose={() => setSelectedOrder(null)}
-          title={`Order Details: ${selectedOrder.id}`}
-          maxWidth="640px"
+          title={`Order #${selectedOrder.id}`}
+          maxWidth="680px"
           footer={
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
               <Button variant="secondary" size="sm" icon={Printer} onClick={() => window.print()}>
@@ -269,101 +319,192 @@ export const OrdersManagement = () => {
           }
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            {/* Top Status & Customer */}
+            {/* Top Customer & Status Card */}
             <div
               style={{
                 display: 'flex',
                 justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '1rem',
-                background: 'var(--bg-surface-elevated)',
-                borderRadius: 'var(--radius-lg)',
+                alignItems: 'flex-start',
+                padding: '1rem 1.25rem',
+                background: 'var(--bg-surface-elevated, #F8FAFC)',
+                borderRadius: 'var(--radius-lg, 12px)',
+                border: '1px solid var(--border-subtle, #E2E8F0)',
               }}
             >
               <div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Customer:</span>
-                <div style={{ fontWeight: 700, fontSize: '1rem' }}>{selectedOrder.customer_name}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  {selectedOrder.customer_phone}
+                <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+                  Customer Information
+                </span>
+                <div style={{ fontWeight: 800, fontSize: '1.1rem', color: 'var(--text-primary)', marginTop: '2px' }}>
+                  Customer: {selectedOrder.customer_name || 'Rahul'}
+                </div>
+                {selectedOrder.customer_phone && (
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '3px' }}>
+                    <Phone size={13} />
+                    <span>{selectedOrder.customer_phone}</span>
+                  </div>
+                )}
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Ordered on: {new Date(selectedOrder.created_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Status:</span>
-                <div>
+                <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+                  Order Status
+                </span>
+                <div style={{ marginTop: '4px' }}>
                   <Badge variant={ORDER_STATUSES[selectedOrder.status]?.color || 'neutral'}>
                     {ORDER_STATUSES[selectedOrder.status]?.label || selectedOrder.status}
                   </Badge>
                 </div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+                  Mode: <strong>{selectedOrder.order_type || 'Store'}</strong> {selectedOrder.table_number ? `(Table ${selectedOrder.table_number})` : ''}
+                </div>
               </div>
             </div>
 
-            {/* Address */}
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', fontSize: '0.85rem' }}>
-              <MapPin size={18} className="text-primary-400 mt-1 flex-shrink-0" />
-              <div>
-                <strong style={{ color: 'var(--text-primary)' }}>Fulfillment Mode: {selectedOrder.order_type}</strong>
-                <p style={{ color: 'var(--text-secondary)' }}>{selectedOrder.delivery_address}</p>
-              </div>
-            </div>
-
-            {/* Items List */}
+            {/* Product Details Section (Numbered list exactly as specified) */}
             <div>
-              <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>
-                Order Items:
-              </h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {selectedOrder.items?.map((item, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      padding: '0.65rem 0.85rem',
-                      background: 'var(--bg-input)',
-                      borderRadius: 'var(--radius-md)',
-                      fontSize: '0.875rem',
-                    }}
-                  >
-                    <div>
-                      <strong>{item.name}</strong> × {item.quantity}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                <h4 style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
+                  Ordered Products:
+                </h4>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                  Total Items: {(selectedOrder.items || []).reduce((acc, it) => acc + (Number(it.quantity) || 1), 0)}
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                {(selectedOrder.items || []).map((item, idx) => {
+                  const pName = item.name || item.product_name || `Product #${item.product_id || item.id || idx + 1}`;
+                  const qty = Number(item.quantity) || 1;
+                  const price = Number(item.price ?? item.unit_price ?? 0);
+                  const lineTotal = Number(item.subtotal ?? item.line_total ?? (price * qty));
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        padding: '0.9rem 1.1rem',
+                        background: 'var(--bg-input, #F8FAFC)',
+                        border: '1px solid var(--border-subtle, #E2E8F0)',
+                        borderRadius: '10px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.4rem',
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: '0.98rem', color: 'var(--text-primary)', wordBreak: 'break-word' }}>
+                        {idx + 1}. {pName}
+                      </div>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+                          gap: '0.5rem',
+                          fontSize: '0.85rem',
+                          color: 'var(--text-secondary)',
+                          paddingTop: '0.25rem',
+                          borderTop: '1px dashed var(--border-subtle, #E2E8F0)',
+                        }}
+                      >
+                        <div>
+                          Quantity: <strong style={{ color: 'var(--text-primary)' }}>{qty}</strong>
+                        </div>
+                        <div>
+                          Price: <strong style={{ color: 'var(--text-primary)' }}>₹{price.toLocaleString()} each</strong>
+                        </div>
+                        <div>
+                          Subtotal: <strong style={{ color: 'var(--accent-emerald, #059669)', fontWeight: 700 }}>₹{lineTotal.toLocaleString()}</strong>
+                        </div>
+                      </div>
                     </div>
-                    <div style={{ fontWeight: 700 }}>₹{item.price * item.quantity}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
-            {/* Summary */}
+            {/* Summary & Payment Info Card */}
             <div
               style={{
-                padding: '1rem',
-                borderTop: '1px solid var(--border-subtle)',
+                padding: '1rem 1.25rem',
+                border: '1px solid var(--border-subtle, #E2E8F0)',
+                borderRadius: '10px',
+                background: 'var(--bg-surface, #FFFFFF)',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '0.35rem',
-                fontSize: '0.85rem',
+                gap: '0.45rem',
+                fontSize: '0.875rem',
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>Subtotal:</span>
-                <span>₹{selectedOrder.subtotal}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
+                <span>Total Items:</span>
+                <strong style={{ color: 'var(--text-primary)' }}>
+                  {(selectedOrder.items || []).reduce((acc, it) => acc + (Number(it.quantity) || 1), 0)}
+                </strong>
               </div>
-              {selectedOrder.discount > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--accent-emerald)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
+                <span>Subtotal:</span>
+                <span>₹{Number(selectedOrder.subtotal || selectedOrder.total || 0).toLocaleString()}</span>
+              </div>
+              {Number(selectedOrder.discount || selectedOrder.discount_amount || 0) > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--accent-emerald, #059669)' }}>
                   <span>Discount Applied:</span>
-                  <span>-₹{selectedOrder.discount}</span>
+                  <span>-₹{Number(selectedOrder.discount || selectedOrder.discount_amount).toLocaleString()}</span>
                 </div>
               )}
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '1.05rem', color: 'var(--text-primary)', borderTop: '1px solid var(--border-subtle)', paddingTop: '0.5rem' }}>
-                <span>Total:</span>
-                <span>₹{selectedOrder.total}</span>
+              {Number(selectedOrder.tax || selectedOrder.tax_amount || 0) > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
+                  <span>Tax:</span>
+                  <span>₹{Number(selectedOrder.tax || selectedOrder.tax_amount).toLocaleString()}</span>
+                </div>
+              )}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontWeight: 800,
+                  fontSize: '1.15rem',
+                  color: 'var(--text-primary)',
+                  borderTop: '1px solid var(--border-subtle, #E2E8F0)',
+                  paddingTop: '0.65rem',
+                  marginTop: '0.2rem',
+                }}
+              >
+                <span>Order Total:</span>
+                <span style={{ color: 'var(--primary-500, #1A2B49)' }}>
+                  ₹{Number(selectedOrder.total || selectedOrder.total_amount || 0).toLocaleString()}
+                </span>
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                  gap: '0.5rem',
+                  marginTop: '0.5rem',
+                  paddingTop: '0.5rem',
+                  borderTop: '1px dashed var(--border-subtle, #E2E8F0)',
+                  fontSize: '0.8rem',
+                }}
+              >
+                <div>
+                  <span style={{ color: 'var(--text-muted)' }}>Payment Method: </span>
+                  <strong>{selectedOrder.payment_method || 'CASH'}</strong>
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-muted)' }}>Payment Status: </span>
+                  <strong style={{ color: selectedOrder.payment_status === 'PAID' ? 'var(--accent-emerald, #059669)' : 'var(--accent-amber, #D97706)' }}>
+                    {selectedOrder.payment_status || 'PENDING'}
+                  </strong>
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-muted)' }}>Order Status: </span>
+                  <strong>{ORDER_STATUSES[selectedOrder.status]?.label || selectedOrder.status}</strong>
+                </div>
               </div>
             </div>
 
-            {/* Lifecycle Transition Buttons */}
+            {/* Lifecycle Pipeline Transition Buttons */}
             <div>
-              <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.4rem', display: 'block' }}>
+              <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.45rem', display: 'block' }}>
                 Advance Order Pipeline:
               </label>
               <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>

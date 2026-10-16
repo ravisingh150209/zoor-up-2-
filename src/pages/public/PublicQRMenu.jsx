@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import {
   ShoppingBag,
   Plus,
@@ -35,10 +35,12 @@ import { API_BASE_URL as API_BASE } from '../../config/api.js';
 
 export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogData: propCatalogData }) => {
   const params = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { addToast } = useToast();
 
+  const tableParam = searchParams.get('table');
   const rawIdentifier = propSlug || params.slug || params.businessId || '';
   const slug = (rawIdentifier && rawIdentifier !== 'undefined' && rawIdentifier !== 'null' && rawIdentifier !== 'None')
     ? String(rawIdentifier).trim()
@@ -48,6 +50,8 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
     items: cartItems,
     businessId: cartBusinessId,
     businessName: cartBusinessName,
+    tableId: cartTableId,
+    setTableId,
     addItem,
     clearAndAddItem,
     updateQuantity,
@@ -83,9 +87,16 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
   // Connect authenticated customer idempotently to the business
   useEffect(() => {
     if (user && (user.role === 'customer' || user.role === 'CUSTOMER') && business?.id) {
-      qrService.connectBusiness(business.id, 'menu').catch(() => {});
+      qrService.connectBusiness(business.id, 'menu', tableParam || cartTableId).catch(() => {});
     }
-  }, [user, business?.id]);
+  }, [user, business?.id, tableParam, cartTableId]);
+
+  // Synchronize table parameter into cart
+  useEffect(() => {
+    if (tableParam && setTableId) {
+      setTableId(tableParam);
+    }
+  }, [tableParam, setTableId]);
 
   useEffect(() => {
     if (slug) {
@@ -341,6 +352,33 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
             ZOOR UP MENU
           </span>
         </div>
+        {totalCount > 0 && (
+          <button
+            id="menu-top-cart-btn"
+            onClick={() => navigate('/cart')}
+            style={{
+              position: 'absolute',
+              top: '12px',
+              right: '16px',
+              background: 'rgba(255, 255, 255, 0.25)',
+              backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255, 255, 255, 0.4)',
+              borderRadius: '999px',
+              padding: '6px 14px',
+              color: '#FFFFFF',
+              fontSize: '0.8rem',
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+            }}
+          >
+            <ShoppingBag size={14} />
+            <span>Cart ({totalCount})</span>
+          </button>
+        )}
       </div>
 
       {/* Business Header Card */}
@@ -397,6 +435,29 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
           )}
         </div>
       </div>
+
+      {/* Table Marker Indicator */}
+      {(tableParam || cartTableId) && (
+        <div style={{ padding: '0 1rem 0.65rem' }}>
+          <div
+            style={{
+              background: '#ECFDF5',
+              border: '1px solid #A7F3D0',
+              borderRadius: '12px',
+              padding: '0.5rem 0.85rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              fontSize: '0.82rem',
+              color: '#065F46',
+              fontWeight: 600,
+            }}
+          >
+            <UtensilsCrossed size={15} />
+            <span>Ordering for Table <strong>{tableParam || cartTableId}</strong></span>
+          </div>
+        </div>
+      )}
 
       {/* Search Input */}
       <div style={{ padding: '0 1rem 0.75rem' }}>
@@ -679,7 +740,7 @@ export const PublicQRMenu = ({ slug: propSlug, business: propBusiness, catalogDa
             <Button
               variant="accent"
               size="sm"
-              onClick={() => navigate('/checkout')}
+              onClick={() => navigate('/cart')}
               icon={ArrowRight}
               style={{
                 borderRadius: '10px',

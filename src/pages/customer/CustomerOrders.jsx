@@ -171,7 +171,9 @@ export const CustomerOrders = () => {
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem', color: '#64748B' }}>
-                  <span>{order.items?.length || 0} item(s) • Paid via {order.payment_method || 'UPI'}</span>
+                  <span>
+                    {order.items?.length || 0} item(s) • {order.order_type === 'DINE_IN' ? `Dine-In (Table ${order.table_number || order.table_id || 'Assigned'})` : 'Takeaway'} • Paid via {order.payment_method || 'UPI'}
+                  </span>
                   <span style={{ color: '#D97706', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '2px' }}>
                     View Receipt <ChevronRight size={14} />
                   </span>
@@ -195,33 +197,73 @@ export const CustomerOrders = () => {
           }
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', fontSize: '0.85rem' }}>
-            <div style={{ padding: '0.75rem', background: '#FAFAFB', borderRadius: '10px' }}>
-              <strong>Payment Method:</strong> {selectedOrder.payment_method || 'UPI'}
-              <p style={{ color: '#64748B', margin: '2px 0 0' }}>
-                Status: <strong>{selectedOrder.payment_status}</strong>
-              </p>
+            <div style={{ padding: '0.85rem', background: '#FAFAFB', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <div>
+                <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', textTransform: 'uppercase', fontWeight: 600 }}>Dining Type</span>
+                <strong style={{ color: '#1A2B49' }}>
+                  {selectedOrder.order_type === 'DINE_IN' ? `Dine-In (Table ${selectedOrder.table_number || selectedOrder.table_id || 'Assigned'})` : 'Takeaway'}
+                </strong>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', textTransform: 'uppercase', fontWeight: 600 }}>Payment Method</span>
+                <strong style={{ color: '#1A2B49' }}>{selectedOrder.payment_method || 'UPI'}</strong>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', textTransform: 'uppercase', fontWeight: 600 }}>Payment Status</span>
+                <Badge variant={selectedOrder.payment_status === 'COMPLETED' ? 'success' : 'warning'}>
+                  {selectedOrder.payment_status || 'PENDING'}
+                </Badge>
+              </div>
             </div>
 
             <div>
-              <strong style={{ color: '#1A2B49', marginBottom: '0.5rem', display: 'block' }}>
+              <strong style={{ color: '#1A2B49', marginBottom: '0.5rem', display: 'block', fontSize: '0.9rem' }}>
                 Items Purchased:
               </strong>
-              {selectedOrder.items?.map((it, i) => (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.45rem 0', borderBottom: '1px solid #F1F5F9' }}>
-                  <span>{it.name} × {it.quantity}</span>
-                  <strong>₹{it.price * it.quantity}</strong>
-                </div>
-              ))}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {selectedOrder.items?.map((it, i) => {
+                  const itemName = it.name || it.product_name || it.title || 'Product';
+                  const itemPrice = Number(it.price || it.unit_price || 0);
+                  const itemQty = Number(it.quantity || 1);
+                  const itemTotal = Number(it.subtotal || itemPrice * itemQty);
+                  return (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderBottom: '1px solid #F1F5F9' }}>
+                      <div>
+                        <div style={{ fontWeight: 600, color: '#1A2B49' }}>{itemName}</div>
+                        <div style={{ fontSize: '0.75rem', color: '#64748B' }}>
+                          Qty: {itemQty} × ₹{itemPrice}
+                        </div>
+                      </div>
+                      <strong style={{ color: '#1A2B49' }}>₹{itemTotal}</strong>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', paddingTop: '0.5rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '0.5rem', borderTop: '1px solid #E2E8F0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
                 <span>Subtotal:</span>
-                <span>₹{selectedOrder.subtotal}</span>
+                <span>₹{selectedOrder.subtotal ?? selectedOrder.total}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '1.05rem', borderTop: '1px solid #E2E8F0', paddingTop: '6px' }}>
+              {Number(selectedOrder.discount || selectedOrder.discount_amount || 0) > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#16A34A', fontWeight: 600 }}>
+                  <span>Discount {selectedOrder.coupon_code ? `(${selectedOrder.coupon_code})` : ''}:</span>
+                  <span>-₹{selectedOrder.discount || selectedOrder.discount_amount}</span>
+                </div>
+              )}
+              {Number(selectedOrder.tax || selectedOrder.tax_amount || 0) > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
+                  <span>Taxes:</span>
+                  <span>₹{selectedOrder.tax || selectedOrder.tax_amount}</span>
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '1.1rem', borderTop: '1px solid #E2E8F0', paddingTop: '8px', color: '#1A2B49' }}>
                 <span>Total Amount:</span>
-                <span style={{ color: '#1A2B49' }}>₹{selectedOrder.total}</span>
+                <span>₹{selectedOrder.total}</span>
+              </div>
+              <div style={{ fontSize: '0.75rem', color: '#16A34A', fontWeight: 600, textAlign: 'right', marginTop: '2px' }}>
+                ✓ +{Math.floor(((Number(selectedOrder.total) || 0) / 100) * 10)} Loyalty Points Credited
               </div>
             </div>
           </div>

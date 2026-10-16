@@ -1,14 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { getErrorMessage } from '../../utils/errorUtils';
 import {
   CheckCircle2,
   Clock,
   Copy,
   Smartphone,
   RefreshCw,
-  Loader2,
-  ShieldCheck,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import confetti from 'canvas-confetti';
@@ -19,20 +16,6 @@ import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { useToast } from '../../context/ToastContext';
 
-const loadRazorpayScript = () => {
-  return new Promise((resolve, reject) => {
-    if (window.Razorpay) {
-      resolve(true);
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-    script.onload = () => resolve(true);
-    script.onerror = () => reject(new Error('Failed to load secure UPI checkout.'));
-    document.body.appendChild(script);
-  });
-};
-
 export const PaymentStatus = () => {
   const { orderId, txnId } = useParams();
   const idToLoad = txnId || orderId;
@@ -41,7 +24,6 @@ export const PaymentStatus = () => {
   const [invoice, setInvoice] = useState(null);
   const [business, setBusiness] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState('');
   const [copiedUpi, setCopiedUpi] = useState(false);
 
@@ -169,78 +151,6 @@ export const PaymentStatus = () => {
       setError(err.message || 'Payment status could not be loaded from the server.');
     } finally {
       if (showLoading) setLoading(false);
-    }
-  };
-
-  const handleLaunchRazorpayUpi = async () => {
-    const orderIdToPay = invoice?.order_id || invoice?.id || idToLoad;
-    const bizId = invoice?.business_id || business?.id;
-    if (!orderIdToPay || !bizId) return;
-
-    setVerifying(true);
-    try {
-      const rzpOrder = await orderService.createRazorpayOrder(orderIdToPay, bizId);
-      await loadRazorpayScript();
-
-      const options = {
-        key: rzpOrder.razorpay_key_id,
-        amount: rzpOrder.amount_paise,
-        currency: 'INR',
-        name: business?.name || 'Store',
-        description: `Order #${orderIdToPay}`,
-        order_id: rzpOrder.razorpay_order_id,
-        theme: { color: '#059669' },
-        config: {
-          display: {
-            blocks: {
-              upi: {
-                name: 'Pay via UPI',
-                instruments: [{ method: 'upi' }],
-              },
-              other: {
-                name: 'Other Modes (Test Mode)',
-                instruments: [{ method: 'card' }, { method: 'netbanking' }, { method: 'wallet' }],
-              },
-            },
-            sequence: ['block.upi', 'block.other'],
-            preferences: {
-              show_default_blocks: true,
-            },
-          },
-        },
-        handler: async (response) => {
-          try {
-            const res = await orderService.verifyRazorpayPayment({
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature,
-              order_id: orderIdToPay,
-            });
-            if (res?.success) {
-              addToast('Payment verified and confirmed!', 'success');
-              await loadTransactionData(true);
-            }
-          } catch (err) {
-            addToast(getErrorMessage(err) || 'Signature verification failed', 'error');
-          }
-        },
-        modal: {
-          ondismiss: () => {
-            orderService.recordRazorpayPaymentFailure({
-              razorpay_order_id: rzpOrder.razorpay_order_id,
-              error_code: 'MODAL_DISMISSED',
-              error_description: 'Checkout modal dismissed on payment status page',
-            }).catch(() => {});
-          },
-        },
-      };
-
-      const rzpInstance = new window.Razorpay(options);
-      rzpInstance.open();
-    } catch (err) {
-      addToast(getErrorMessage(err) || 'Could not launch payment gateway', 'error');
-    } finally {
-      setVerifying(false);
     }
   };
 
@@ -398,48 +308,7 @@ export const PaymentStatus = () => {
           </div>
         )}
 
-        {/* Instant UPI Auto-Verification Section */}
-        {invoice?.payment_status !== 'PAID' && (
-          <div
-            id="status-auto-verify-card"
-            style={{
-              background: '#F0FDF4',
-              border: '1px solid #BBF7D0',
-              borderRadius: '16px',
-              padding: '1.25rem',
-              marginBottom: '1.25rem',
-              textAlign: 'center',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginBottom: '0.5rem', color: '#065F46', fontWeight: 700, fontSize: '0.95rem' }}>
-              <ShieldCheck size={20} color="#059669" />
-              <span>Instant Automatic UPI Verification</span>
-            </div>
-            <p style={{ fontSize: '0.8rem', color: '#047857', marginBottom: '0.85rem' }}>
-              Pay via any UPI App (GPay, PhonePe, Paytm, BHIM). Payment is cryptographically verified server-side without manual store intervention.
-            </p>
-            <Button
-              id="pay-and-verify-upi-btn"
-              type="button"
-              variant="primary"
-              className="btn-block"
-              style={{
-                background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
-                color: '#FFFFFF',
-                padding: '0.85rem 1.25rem',
-                fontSize: '1rem',
-                fontWeight: 700,
-                borderRadius: '12px',
-                boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
-              }}
-              icon={verifying ? Loader2 : ShieldCheck}
-              loading={verifying}
-              onClick={handleLaunchRazorpayUpi}
-            >
-              {verifying ? 'Verifying Payment...' : 'Pay & Verify via UPI Now'}
-            </Button>
-          </div>
-        )}
+
 
         {/* UPI QR & Intent (Only when method is UPI and not yet PAID) */}
         {invoice?.payment_mode === 'UPI' && invoice?.payment_status !== 'PAID' && (

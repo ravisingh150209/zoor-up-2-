@@ -14,6 +14,7 @@ import { ProtectedRoute } from './components/layout/ProtectedRoute';
 import { PublicLanding } from './pages/public/PublicLanding';
 import { PublicQRMenu } from './pages/public/PublicQRMenu';
 import { PublicBusinessHub } from './pages/public/PublicBusinessHub';
+import { PublicCart } from './pages/public/PublicCart';
 import { PublicCheckout } from './pages/public/PublicCheckout';
 import { PaymentStatus, OrderSuccess } from './pages/public/PaymentStatus';
 import { DownloadPage } from './pages/public/DownloadPage';
@@ -60,6 +61,7 @@ const CustomerChat = lazy(() => import('./pages/customer/CustomerChat').then(m =
 const CustomerProfile = lazy(() => import('./pages/customer/CustomerProfile').then(m => ({ default: m.CustomerProfile })));
 const CustomerQRScanner = lazy(() => import('./pages/customer/CustomerQRScanner').then(m => ({ default: m.CustomerQRScanner })));
 const CustomerTableBooking = lazy(() => import('./pages/customer/CustomerTableBooking').then(m => ({ default: m.CustomerTableBooking })));
+const CustomerOrders = lazy(() => import('./pages/customer/CustomerOrders').then(m => ({ default: m.CustomerOrders })));
 
 // Admin Modules
 const AdminDashboard = lazy(() => import('./pages/admin/AdminDashboard').then(m => ({ default: m.AdminDashboard })));
@@ -120,19 +122,26 @@ export function App() {
 
               {/* Standard ZOOR UP QR Routes */}
               <Route path="/b/:businessId" element={<PublicBusinessHub />} />
+              <Route path="/b/:businessId/menu" element={<PublicQRMenu />} />
+              <Route path="/b/:businessId/cart" element={<PublicCart />} />
+              <Route path="/b/:businessId/checkout" element={<PublicCheckout />} />
               <Route path="/b/:businessId/table/:tableId" element={<PublicBusinessHub />} />
               <Route path="/b/:businessId/:type" element={<PublicBusinessHub />} />
               <Route path="/join/:token" element={<PublicBusinessHub />} />
 
               {/* Public Storefront, QR Deep Links & In-Store Checkout */}
               <Route path="/m/:slug" element={<PublicQRMenu />} />
+              <Route path="/m/:slug/cart" element={<PublicCart />} />
+              <Route path="/m/:slug/checkout" element={<PublicCheckout />} />
               <Route path="/menu/:slug" element={<PublicQRMenu />} />
+              <Route path="/menu/:slug/cart" element={<PublicCart />} />
+              <Route path="/menu/:slug/checkout" element={<PublicCheckout />} />
               <Route path="/store/:slug" element={<PublicQRMenu />} />
               <Route path="/checkin/:businessId" element={<CustomerQRScanner />} />
               <Route path="/loyalty/:businessId" element={<Suspense fallback={<PageSkeleton />}> <CustomerLoyalty /> </Suspense>} />
               <Route path="/customer/:customerId" element={<Suspense fallback={<PageSkeleton />}> <CustomerProfile /> </Suspense>} />
               <Route path="/checkout" element={<PublicCheckout />} />
-              <Route path="/cart" element={<Navigate to="/checkout" replace />} />
+              <Route path="/cart" element={<PublicCart />} />
               <Route path="/payment-status/:txnId" element={<PaymentStatus />} />
               <Route path="/order-success/:orderId" element={<OrderSuccess />} />
               <Route path="/download" element={<DownloadPage />} />
@@ -215,18 +224,23 @@ export function App() {
               >
                 <Route index element={<Suspense fallback={<PageSkeleton />}> <CustomerHome /> </Suspense>} />
                 <Route path="businesses" element={<Suspense fallback={<PageSkeleton />}> <CustomerBusinesses /> </Suspense>} />
+                <Route path="orders" element={<Suspense fallback={<PageSkeleton />}> <CustomerOrders /> </Suspense>} />
                 <Route path="scan-qr" element={<Suspense fallback={<PageSkeleton />}> <CustomerQRScanner /> </Suspense>} />
                 <Route path="table-booking" element={<Suspense fallback={<PageSkeleton />}> <CustomerTableBooking /> </Suspense>} />
                 <Route path="loyalty" element={<Suspense fallback={<PageSkeleton />}> <CustomerLoyalty /> </Suspense>} />
                 <Route path="rewards" element={<Suspense fallback={<PageSkeleton />}> <CustomerLoyalty /> </Suspense>} />
                 <Route path="offers" element={<Suspense fallback={<PageSkeleton />}> <CustomerLoyalty /> </Suspense>} />
-                <Route path="activity" element={<Suspense fallback={<PageSkeleton />}> <CustomerProfile /> </Suspense>} />
+                <Route path="activity" element={<Suspense fallback={<PageSkeleton />}> <CustomerOrders /> </Suspense>} />
                 <Route path="chat" element={<Suspense fallback={<PageSkeleton />}> <CustomerChat /> </Suspense>} />
                 <Route path="notifications" element={<Suspense fallback={<PageSkeleton />}> <NotificationsPage /> </Suspense>} />
                 <Route path="profile" element={<Suspense fallback={<PageSkeleton />}> <CustomerProfile /> </Suspense>} />
               </Route>
 
-              {/* Customer Table Booking Direct Alias */}
+              {/* Customer Orders & Table Booking Direct Aliases */}
+              <Route
+                path="/customer/purchases"
+                element={<Navigate to="/customer/orders" replace />}
+              />
               <Route
                 path="/customer/book-table"
                 element={<Navigate to="/customer/table-booking" replace />}

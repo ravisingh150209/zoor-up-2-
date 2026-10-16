@@ -87,14 +87,33 @@ async def add_security_headers(request: Request, call_next):
 
 @app.exception_handler(Exception)
 async def safe_internal_error(request: Request, exc: Exception):
-    logger.error("Unhandled API exception for %s %s (%s)", request.method, request.url.path, type(exc).__name__)
-    message = "An internal server error occurred." if IS_PRODUCTION else str(exc)
+    logger.error("Unhandled API exception for %s %s (%s)", request.method, request.url.path, type(exc).__name__, exc_info=True)
+    err_str = str(exc)
+    err_no = getattr(exc, "errno", None)
+    is_resource_error = (
+        err_no in (11, 104, 110, 111)
+        or "Errno 11" in err_str
+        or "Resource temporarily unavailable" in err_str
+        or "EAGAIN" in err_str
+        or "EWOULDBLOCK" in err_str
+        or isinstance(exc, (BlockingIOError, ConnectionResetError, TimeoutError))
+    )
+
+    if is_resource_error:
+        status_code = 503
+        message = "Service is temporarily unavailable. Please retry."
+    else:
+        status_code = 500
+        message = "An internal server error occurred." if IS_PRODUCTION else err_str
+
     origin = request.headers.get("origin")
     headers = {}
+    if is_resource_error:
+        headers["Retry-After"] = "2"
     if origin and (origin in ALLOWED_ORIGINS or not IS_PRODUCTION):
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
-    return JSONResponse(status_code=500, content={"detail": message}, headers=headers)
+    return JSONResponse(status_code=status_code, content={"detail": message}, headers=headers)
 
 
 @app.exception_handler(RequestValidationError)
