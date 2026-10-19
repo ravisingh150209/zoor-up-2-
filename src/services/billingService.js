@@ -57,10 +57,10 @@ export const billingService = {
     const newId = `INV-2026-${String(list.length + 101).padStart(3, '0')}`;
 
     const subtotal = Number(data.subtotal) || 0;
-    const taxRate = Number(data.taxRate || 5);
-    const tax_amount = Math.round((subtotal * taxRate) / 100);
+    const taxRate = Number(data.taxRate || 0);
+    const tax_amount = Math.round(((subtotal * taxRate) / 100) * 100) / 100;
     const discount_amount = Number(data.discount_amount || 0);
-    const total_amount = Math.max(0, subtotal + tax_amount - discount_amount);
+    const total_amount = Math.max(0, Math.round((subtotal + tax_amount - discount_amount) * 100) / 100);
 
     const newInvoice = {
       id: newId,

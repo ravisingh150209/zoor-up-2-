@@ -529,8 +529,8 @@ def create_order(
         )
 
     discounted_subtotal = max(Decimal("0.00"), subtotal - applied_discount)
-    tax = _money(discounted_subtotal * Decimal("0.05"))
-    total = _money(discounted_subtotal + tax)
+    tax = Decimal("0.00")
+    total = _money(discounted_subtotal)
 
     table_name = request.table_number.strip() if request.table_number else None
     if request.table_id:
@@ -682,8 +682,8 @@ def validate_coupon_endpoint(req: CouponValidateRequest):
     try:
         v, discount, code, _ = _validate_coupon_logic(req.business_id, req.code, subtotal_dec, req.customer_id or "")
         disc_subtotal = max(Decimal("0.00"), subtotal_dec - discount)
-        tax = _money(disc_subtotal * Decimal("0.05"))
-        new_total = _money(disc_subtotal + tax)
+        tax = Decimal("0.00")
+        new_total = _money(disc_subtotal)
         return {
             "valid": True,
             "success": True,

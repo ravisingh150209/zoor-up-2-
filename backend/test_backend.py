@@ -706,8 +706,8 @@ def run_tests():
     assert created_order["business_id"] == biz["id"]
     assert created_order["items"][0]["price"] == 120.0, "Price must be loaded from the stored product, not client input."
     assert created_order["subtotal"] == 240.0
-    assert created_order["tax"] == 12.0
-    assert created_order["total"] == 252.0
+    assert created_order["tax"] == 0.0
+    assert created_order["total"] == 240.0
     assert created_order["status"] == "NEW"
 
     duplicate_order_res = client.post("/api/orders", json=order_payload, headers=customer_a_headers)

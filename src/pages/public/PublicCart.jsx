@@ -33,8 +33,8 @@ export const PublicCart = () => {
     tableId,
   } = useCart();
 
-  const taxAmount = Math.round((subtotal * 5) / 100);
-  const grandTotal = subtotal + taxAmount;
+  const taxAmount = 0;
+  const grandTotal = Math.round(subtotal * 100) / 100;
 
   const baseMenuUrl = businessSlug
     ? `/m/${businessSlug}`
@@ -405,11 +405,11 @@ export const PublicCart = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', fontSize: '0.85rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
               <span>Item Subtotal ({totalCount} items):</span>
-              <strong style={{ color: '#1A2B49' }}>₹{subtotal}</strong>
+              <strong style={{ color: '#1A2B49' }}>₹{Number(subtotal).toFixed(2)}</strong>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
-              <span>Estimated Taxes & GST (5%):</span>
-              <strong style={{ color: '#1A2B49' }}>₹{taxAmount}</strong>
+              <span>Taxes & GST:</span>
+              <strong style={{ color: '#1A2B49' }}>₹{Number(taxAmount).toFixed(2)}</strong>
             </div>
             <div
               style={{
@@ -424,7 +424,7 @@ export const PublicCart = () => {
               }}
             >
               <span>Total Amount:</span>
-              <span style={{ color: '#059669' }}>₹{grandTotal}</span>
+              <span style={{ color: '#059669' }}>₹{Number(grandTotal).toFixed(2)}</span>
             </div>
           </div>
         </div>
@@ -459,7 +459,7 @@ export const PublicCart = () => {
               Total Payable
             </span>
             <span style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1A2B49' }}>
-              ₹{grandTotal}
+              ₹{Number(grandTotal).toFixed(2)}
             </span>
           </div>
 

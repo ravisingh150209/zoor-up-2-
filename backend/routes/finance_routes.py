@@ -240,7 +240,7 @@ def create_invoice(req: CreateInvoiceRequest, current_user: dict = Depends(get_c
     new_id = f"INV-2026-{uuid.uuid4().hex[:6].upper()}"
 
     subtotal = float(req.subtotal)
-    tax_rate = float(req.taxRate or 5.0)
+    tax_rate = float(req.taxRate if req.taxRate is not None else 0.0)
     tax_amount = req.tax_amount if req.tax_amount is not None else round((subtotal * tax_rate) / 100.0, 2)
     discount_amount = float(req.discount_amount or 0.0)
     total_amount = req.total_amount if req.total_amount is not None else max(0.0, subtotal + tax_amount - discount_amount)

@@ -40,7 +40,7 @@ export const BillingManagement = () => {
   const [customerName, setCustomerName] = useState('Walk-in Customer');
   const [customerPhone, setCustomerPhone] = useState('');
   const [invoiceItems, setInvoiceItems] = useState([]);
-  const [taxRate, setTaxRate] = useState(5);
+  const [taxRate, setTaxRate] = useState(0);
   const [discountAmount, setDiscountAmount] = useState(0);
   const [paymentMode, setPaymentMode] = useState('UPI');
   const [paymentStatus, setPaymentStatus] = useState('PAID');
@@ -85,8 +85,8 @@ export const BillingManagement = () => {
   };
 
   const subtotal = invoiceItems.reduce((sum, item) => sum + (Number(item.price) || 0) * (Number(item.quantity) || 1), 0);
-  const taxAmount = Math.round((subtotal * Number(taxRate)) / 100);
-  const finalTotal = Math.max(0, subtotal + taxAmount - Number(discountAmount));
+  const taxAmount = Math.round(((subtotal * Number(taxRate)) / 100) * 100) / 100;
+  const finalTotal = Math.max(0, Math.round((subtotal + taxAmount - Number(discountAmount)) * 100) / 100);
 
   const handleCreateInvoice = async (e) => {
     e.preventDefault();
@@ -373,7 +373,7 @@ export const BillingManagement = () => {
                 color: 'var(--text-primary)',
               }}
             >
-              Total Due: ₹{finalTotal}
+              Total Due: ₹{Number(finalTotal).toFixed(2)}
             </div>
           </div>
         </form>

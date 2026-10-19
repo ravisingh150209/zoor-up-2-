@@ -190,8 +190,8 @@ export const PublicCheckout = () => {
     }
   };
 
-  const taxAmount = Math.round((subtotal * 5) / 100);
-  const grandTotal = Math.max(0, subtotal + taxAmount - appliedDiscount);
+  const taxAmount = 0;
+  const grandTotal = Math.max(0, Math.round((subtotal - appliedDiscount) * 100) / 100);
 
   // Authoritatively construct business-specific UPI payment URI
   const formatUpiVpa = (vpa) => {
@@ -295,8 +295,8 @@ export const PublicCheckout = () => {
           recipient_id: order.business_id,
           business_id: order.business_id,
           type: NOTIFICATION_TYPES.PAYMENT_PENDING,
-          title: `New ${paymentMethod} Order: ₹${grandTotal} (${orderType === 'DINE_IN' ? `Table ${finalTableNumber}` : 'Takeaway'})`,
-          message: `${customerName.trim()} placed order ${orderRef} worth ₹${grandTotal}.`,
+          title: `New ${paymentMethod} Order: ₹${grandTotal.toFixed(2)} (${orderType === 'DINE_IN' ? `Table ${finalTableNumber}` : 'Takeaway'})`,
+          message: `${customerName.trim()} placed order ${orderRef} worth ₹${grandTotal.toFixed(2)}.`,
           entity_id: orderRef,
           action_url: '/business/orders',
         }).catch(() => {});
@@ -779,16 +779,16 @@ export const PublicCheckout = () => {
           <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.4rem', fontSize: '0.85rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
               <span>Subtotal:</span>
-              <span>₹{subtotal}</span>
+              <span>₹{Number(subtotal).toFixed(2)}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
-              <span>Applicable Taxes & GST (5%):</span>
-              <span>₹{taxAmount}</span>
+              <span>Taxes & GST:</span>
+              <span>₹{Number(taxAmount).toFixed(2)}</span>
             </div>
             {appliedDiscount > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', color: '#16A34A', fontWeight: 600 }}>
                 <span>Coupon Discount:</span>
-                <span>-₹{appliedDiscount}</span>
+                <span>-₹{Number(appliedDiscount).toFixed(2)}</span>
               </div>
             )}
             <div
@@ -804,7 +804,7 @@ export const PublicCheckout = () => {
               }}
             >
               <span>Total Payable:</span>
-              <span style={{ color: '#059669' }}>₹{grandTotal}</span>
+              <span style={{ color: '#059669' }}>₹{Number(grandTotal).toFixed(2)}</span>
             </div>
           </div>
         </div>

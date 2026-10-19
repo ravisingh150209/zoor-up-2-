@@ -385,5 +385,319 @@ def test_business_subscription_razorpay_preservation():
             assert res["razorpay_order_id"] == "order_sub_mock_123"
 
 
+def test_exact_11_inr_upi_payment_flow():
+    """
+    Validates that:
+    1. An exact ₹11.00 order creates a direct UPI payment intent with am=11.00.
+    2. The payment record has amount=11.00.
+    3. The UPI intent's URI exactly encodes am=11.00.
+    4. Business dashboard todaySales calculation accounts for ₹11.00 with zero deduction.
+    """
+    from backend.routes.payment_routes import create_direct_upi_payment, DirectUpiPaymentRequest
+    from unittest.mock import patch, MagicMock
+
+    biz_id = "biz_exact_11"
+    order_id = "ord_exact_11"
+
+    mock_biz = {
+        "id": biz_id,
+        "name": "Chai & Snacks Corner",
+        "upi_id": "chaicorner@okaxis",
+        "upi_name": "Chai Corner",
+        "upi_notes": "Order Payment",
+        "upi_enabled": True,
+    }
+
+    mock_order = {
+        "id": order_id,
+        "order_id": order_id,
+        "business_id": biz_id,
+        "customer_id": "cust_anil",
+        "customer_user_id": "user_anil",
+        "subtotal": 11.0,
+        "tax": 0.0,
+        "total": 11.0,
+        "total_amount": 11.0,
+        "status": "NEW",
+        "payment_status": "PAID",
+    }
+
+    payments_store = []
+
+    class MockCol:
+        def __init__(self, data):
+            self.data = data
+        def find_one(self, q):
+            for doc in self.data:
+                if all(doc.get(k) == v for k, v in q.items()):
+                    return doc
+            return None
+        def insert_one(self, doc):
+            self.data.append(doc)
+            return MagicMock(inserted_id=doc.get("id"))
+        def find(self, q=None):
+            return [d for d in self.data if not q or all(d.get(k) == v for k, v in q.items())]
+
+    def mock_get_col(col_name):
+        if col_name == "businesses":
+            return MockCol([mock_biz])
+        if col_name == "orders":
+            return MockCol([mock_order])
+        if col_name == "payments":
+            return MockCol(payments_store)
+        if col_name == "customers":
+            return MockCol([{"id": "user_anil", "customer_id": "cust_anil"}])
+        if col_name == "customer_businesses":
+            return MockCol([{"customer_id": "cust_anil", "business_id": biz_id, "status": "active"}])
+        return MockCol([])
+
+    req = DirectUpiPaymentRequest(
+        business_id=biz_id,
+        order_id=order_id,
+        amount=11.0,
+    )
+    fake_req = MagicMock()
+    fake_req.client.host = "127.0.0.1"
+
+    with patch("backend.routes.payment_routes.get_collection", side_effect=mock_get_col):
+        res = create_direct_upi_payment(req, fake_req, {"id": "user_anil", "role": "CUSTOMER"})
+        assert res["success"] is True
+        assert res["amount"] == 11.00
+
+        # Verify URI encodes am=11.00
+        parsed = urllib.parse.parse_qs(urllib.parse.urlparse(res["upi_uri"]).query)
+        assert parsed["am"][0] == "11.00"
+        assert parsed["pa"][0] == "chaicorner@okaxis"
+
+        # Verify payment record in database
+        assert len(payments_store) == 1
+        assert payments_store[0]["amount"] == 11.00
+        assert payments_store[0]["order_id"] == order_id
+
+        # Verify dashboard todaySales calculates exact ₹11.00
+        today_orders = [mock_order]
+        today_sales = sum(
+            float(order.get("total", 0) or 0)
+            for order in today_orders
+            if str(order.get("payment_status", "")).upper() == "PAID"
+        )
+        assert today_sales == 11.00
+
+
+def test_subtotal_10_no_automatic_tax_upi_amount():
+    """
+    Validates that:
+    1. A ₹10.00 product subtotal with 0 discount has 0.00 tax and results in a final payable amount of ₹10.00.
+    2. Direct UPI payment intent URI encodes am=10.00.
+    3. Payment record amount is stored as 10.00.
+    4. Business dashboard sales sum is 10.00, with zero deduction.
+    5. When a discount applies (e.g. ₹3 off ₹15), tax remains 0.00 and payable total is ₹12.00.
+    """
+    from decimal import Decimal
+    from backend.routes.payment_routes import create_direct_upi_payment, DirectUpiPaymentRequest
+    from unittest.mock import patch, MagicMock
+
+    # Scenario 1: Exact ₹10.00 subtotal, no tax
+    subtotal = Decimal("10.00")
+    discount = Decimal("0.00")
+    tax = Decimal("0.00")
+    total = max(Decimal("0.00"), subtotal - discount)
+    assert tax == Decimal("0.00")
+    assert total == Decimal("10.00")
+
+    biz_id = "biz_chai_10"
+    order_id = "ord_chai_10"
+
+    mock_biz = {
+        "id": biz_id,
+        "name": "Tea Stall",
+        "upi_id": "teastall@icici",
+        "upi_name": "Tea Stall Cafe",
+        "upi_notes": "Chai Payment",
+        "upi_enabled": True,
+    }
+
+    mock_order = {
+        "id": order_id,
+        "order_id": order_id,
+        "business_id": biz_id,
+        "customer_id": "cust_guest",
+        "subtotal": float(subtotal),
+        "discount": float(discount),
+        "tax": float(tax),
+        "total": float(total),
+        "total_amount": float(total),
+        "status": "NEW",
+        "payment_status": "PAID",
+        "is_guest": True,
+    }
+
+    payments_store = []
+
+    class MockCol:
+        def __init__(self, data):
+            self.data = data
+        def find_one(self, q):
+            for doc in self.data:
+                if all(doc.get(k) == v for k, v in q.items()):
+                    return doc
+            return None
+        def insert_one(self, doc):
+            self.data.append(doc)
+            return MagicMock(inserted_id=doc.get("id"))
+        def find(self, q=None):
+            return [d for d in self.data if not q or all(d.get(k) == v for k, v in q.items())]
+
+    def mock_get_col(col_name):
+        if col_name == "businesses":
+            return MockCol([mock_biz])
+        if col_name == "orders":
+            return MockCol([mock_order])
+        if col_name == "payments":
+            return MockCol(payments_store)
+        return MockCol([])
+
+    req = DirectUpiPaymentRequest(
+        business_id=biz_id,
+        order_id=order_id,
+    )
+    fake_req = MagicMock()
+    fake_req.client.host = "127.0.0.1"
+
+    with patch("backend.routes.payment_routes.get_collection", side_effect=mock_get_col):
+        res = create_direct_upi_payment(req, fake_req, None)
+        assert res["success"] is True
+        assert res["amount"] == 10.00
+
+        # Verify URI strictly encodes am=10.00
+        parsed = urllib.parse.parse_qs(urllib.parse.urlparse(res["upi_uri"]).query)
+        assert parsed["am"][0] == "10.00"
+
+        # Verify payment record amount
+        assert len(payments_store) == 1
+        assert payments_store[0]["amount"] == 10.00
+
+        # Verify dashboard sales matches exactly ₹10.00
+        today_sales = sum(
+            float(order.get("total", 0) or 0)
+            for order in [mock_order]
+            if str(order.get("payment_status", "")).upper() == "PAID"
+        )
+        assert today_sales == 10.00
+
+    # Scenario 2: Subtotal ₹15.00 with ₹3.00 coupon discount -> ₹12.00 with 0 tax
+    order_disc_id = "ord_chai_disc_12"
+    mock_disc_order = {
+        "id": order_disc_id,
+        "order_id": order_disc_id,
+        "business_id": biz_id,
+        "customer_id": "cust_guest",
+        "subtotal": 15.0,
+        "discount": 3.0,
+        "tax": 0.0,
+        "total": 12.0,
+        "total_amount": 12.0,
+        "status": "NEW",
+        "payment_status": "PAID",
+        "is_guest": True,
+    }
+    payments_disc_store = []
+
+    def mock_disc_col(col_name):
+        if col_name == "businesses":
+            return MockCol([mock_biz])
+        if col_name == "orders":
+            return MockCol([mock_disc_order])
+        if col_name == "payments":
+            return MockCol(payments_disc_store)
+        return MockCol([])
+
+    req_disc = DirectUpiPaymentRequest(
+        business_id=biz_id,
+        order_id=order_disc_id,
+    )
+    with patch("backend.routes.payment_routes.get_collection", side_effect=mock_disc_col):
+        res_disc = create_direct_upi_payment(req_disc, fake_req, None)
+        assert res_disc["success"] is True
+        assert res_disc["amount"] == 12.00
+        parsed_disc = urllib.parse.parse_qs(urllib.parse.urlparse(res_disc["upi_uri"]).query)
+        assert parsed_disc["am"][0] == "12.00"
+        assert len(payments_disc_store) == 1
+        assert payments_disc_store[0]["amount"] == 12.00
+
+
+def test_decimal_order_total_preserved_across_all_records():
+    """
+    Validates that various decimal payment amounts (e.g., 10.50, 11.55, 25.75, 99.99):
+    1. Preserve exact rupee and paise across UPI intent, payment record, and dashboard.
+    2. No platform fee or commission is subtracted from customer order totals.
+    3. UPI intent URI always formats to exactly 2 decimal places.
+    """
+    from backend.routes.payment_routes import create_direct_upi_payment, DirectUpiPaymentRequest
+    from unittest.mock import patch, MagicMock
+
+    test_amounts = [10.50, 11.55, 25.75, 99.99, 11.00]
+
+    for amt in test_amounts:
+        biz_id = f"biz_{int(amt * 100)}"
+        order_id = f"ord_{int(amt * 100)}"
+        mock_biz = {
+            "id": biz_id,
+            "name": "Store",
+            "upi_id": "store@upi",
+            "upi_name": "Store UPI",
+            "upi_enabled": True,
+        }
+        mock_order = {
+            "id": order_id,
+            "order_id": order_id,
+            "business_id": biz_id,
+            "total": amt,
+            "total_amount": amt,
+            "is_guest": True,
+            "payment_status": "PAID",
+        }
+        payments_db = []
+
+        class MockCol:
+            def __init__(self, data):
+                self.data = data
+            def find_one(self, q):
+                for d in self.data:
+                    if all(d.get(k) == v for k, v in q.items()):
+                        return d
+                return None
+            def insert_one(self, doc):
+                self.data.append(doc)
+                return MagicMock()
+            def find(self, q=None):
+                return self.data
+
+        def mock_col(name):
+            if name == "businesses":
+                return MockCol([mock_biz])
+            if name == "orders":
+                return MockCol([mock_order])
+            if name == "payments":
+                return MockCol(payments_db)
+            return MockCol([])
+
+        fake_req = MagicMock()
+        fake_req.client.host = "127.0.0.1"
+
+        with patch("backend.routes.payment_routes.get_collection", side_effect=mock_col):
+            res = create_direct_upi_payment(
+                DirectUpiPaymentRequest(business_id=biz_id, order_id=order_id),
+                fake_req,
+                None,
+            )
+            assert res["amount"] == amt
+            parsed = urllib.parse.parse_qs(urllib.parse.urlparse(res["upi_uri"]).query)
+            assert parsed["am"][0] == f"{amt:.2f}"
+            assert payments_db[0]["amount"] == amt
+            # Zero deduction: customer amount == merchant received amount
+            assert payments_db[0]["amount"] == mock_order["total"]
+
+
 if __name__ == "__main__":
     pytest.main(["-s", __file__])

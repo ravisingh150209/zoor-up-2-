@@ -215,8 +215,8 @@ def test_full_qr_ordering_and_payment_audit():
     order_a_id = order_a["id"]
     assert order_a["business_id"] == biz_a_id
     assert order_a["subtotal"] == 500.0  # 2 * 250 discount price
-    assert order_a["tax"] == 25.0       # 5% GST
-    assert order_a["total"] == 525.0
+    assert order_a["tax"] == 0.0        # No automatic tax
+    assert order_a["total"] == 500.0
     assert order_a["payment_status"] == "PENDING"
     print(f"[PASS] TEST A: QR scan to order creation succeeded. Canonical Order ID: {order_a_id}")
 
@@ -228,7 +228,7 @@ def test_full_qr_ordering_and_payment_audit():
     assert res_upi.status_code == 200, f"UPI intent failed: {res_upi.text}"
     upi_intent = res_upi.json()
     assert upi_intent["status"] == "pending", "Payment must NOT be marked PAID simply because intent was opened!"
-    assert upi_intent["amount"] == 525.0
+    assert upi_intent["amount"] == 500.0
     assert f"auditcafe_{suffix}@upi" in upi_intent["upi_uri"]
 
     # Verify order is still PENDING in DB
@@ -254,7 +254,7 @@ def test_full_qr_ordering_and_payment_audit():
     cash_order = res_cash.json()
     cash_order_id = cash_order["id"]
     assert cash_order["payment_status"] == "PENDING"
-    assert cash_order["total"] == 262.5  # 250 + 12.5 tax
+    assert cash_order["total"] == 250.0  # 250 with 0 tax
 
     # Customer attempts to confirm cash payment -> Must be forbidden (403)
     res_cust_confirm = client.post("/api/payments/business/confirm", json={"order_id": cash_order_id}, headers=cust_1_headers)
