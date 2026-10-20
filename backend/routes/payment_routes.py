@@ -22,6 +22,7 @@ from backend.razorpay_service import (
     RAZORPAY_KEY_ID,
     RAZORPAY_KEY_SECRET,
     SUBSCRIPTION_PLAN_PRICING,
+    validate_razorpay_config,
     create_razorpay_order_for_payment,
     verify_razorpay_payment,
     create_razorpay_order_for_subscription,
@@ -39,8 +40,10 @@ MERCHANT_BRAND = "ZOOR UP"
 # ZOOR UP Platform UPI for subscription payments (fixed, not per-business)
 PLATFORM_UPI = os.environ.get("PLATFORM_UPI", "8521893325@ybl")
 
-if RAZORPAY_MODE != "test":
-    print(f"[RAZORPAY] WARNING: RAZORPAY_MODE is '{RAZORPAY_MODE}'. Only 'test' mode is supported.")
+if RAZORPAY_MODE not in ("test", "live"):
+    print(f"[RAZORPAY] WARNING: Invalid RAZORPAY_MODE '{RAZORPAY_MODE}'. Only 'test' and 'live' modes are supported.")
+else:
+    print(f"[RAZORPAY] Initialized in {RAZORPAY_MODE.upper()} mode for SaaS subscriptions.")
 
 class DirectUpiPaymentRequest(BaseModel):
     business_id: Optional[str] = None
@@ -670,10 +673,10 @@ def create_razorpay_order(req: RazorpayOrderRequest, request: Request, current_u
     """
     Creates a Razorpay order for the given order.
     Returns Razorpay order details for frontend checkout.
-    TEST MODE ONLY.
+    Supports both TEST and LIVE modes.
     """
-    if RAZORPAY_MODE != "test":
-        raise HTTPException(status_code=400, detail="Razorpay is only available in test mode.")
+    if RAZORPAY_MODE not in ("test", "live"):
+        raise HTTPException(status_code=400, detail="Razorpay is only available in test or live mode.")
     
     if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
         raise HTTPException(status_code=500, detail="Razorpay credentials not configured on server.")
@@ -739,10 +742,10 @@ def create_razorpay_order(req: RazorpayOrderRequest, request: Request, current_u
 def verify_razorpay_payment_route(req: RazorpayVerifyRequest, current_user: dict = Depends(get_current_user)):
     """
     Verifies Razorpay payment signature and updates payment status.
-    TEST MODE ONLY.
+    Supports both TEST and LIVE modes.
     """
-    if RAZORPAY_MODE != "test":
-        raise HTTPException(status_code=400, detail="Razorpay is only available in test mode.")
+    if RAZORPAY_MODE not in ("test", "live"):
+        raise HTTPException(status_code=400, detail="Razorpay is only available in test or live mode.")
     
     if not RAZORPAY_KEY_SECRET:
         raise HTTPException(status_code=500, detail="Razorpay credentials not configured on server.")
@@ -811,15 +814,16 @@ def create_subscription_razorpay_order_route(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Creates a Razorpay order for Business Subscription using the exact same
-    Razorpay merchant credentials and configuration as customer orders.
-    TEST MODE ONLY.
+    Creates a Razorpay order for Business Subscription using the configured
+    Razorpay merchant credentials and configuration. Supports both TEST and LIVE modes.
     """
-    if RAZORPAY_MODE != "test":
-        raise HTTPException(status_code=400, detail="Razorpay is only available in test mode.")
+    if RAZORPAY_MODE not in ("test", "live"):
+        raise HTTPException(status_code=400, detail="Razorpay is only available in test or live mode.")
     
-    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
-        raise HTTPException(status_code=500, detail="Razorpay credentials not configured on server.")
+    try:
+        validate_razorpay_config()
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
     role = (current_user.get("role") or "").upper()
     enforce_rate_limit("sub-rzp-create-user", current_user.get("id"), 10, 3600)
@@ -860,14 +864,16 @@ def verify_subscription_razorpay_route(
 ):
     """
     Verifies Razorpay payment signature and activates the business subscription plan.
+    Supports both TEST and LIVE modes.
     Does NOT create customer orders.
-    TEST MODE ONLY.
     """
-    if RAZORPAY_MODE != "test":
-        raise HTTPException(status_code=400, detail="Razorpay is only available in test mode.")
+    if RAZORPAY_MODE not in ("test", "live"):
+        raise HTTPException(status_code=400, detail="Razorpay is only available in test or live mode.")
     
-    if not RAZORPAY_KEY_SECRET:
-        raise HTTPException(status_code=500, detail="Razorpay credentials not configured on server.")
+    try:
+        validate_razorpay_config()
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
     role = (current_user.get("role") or "").upper()
     if role not in (ROLE_BUSINESS_OWNER, ROLE_SUPER_ADMIN):

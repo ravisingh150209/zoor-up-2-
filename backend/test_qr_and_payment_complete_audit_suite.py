@@ -325,11 +325,11 @@ def test_full_qr_ordering_and_payment_audit():
     print("[PASS] TEST E: Invalid product, cross-store product, unavailable item, and nonexistent business rejected safely (400/404).")
 
     # =============================================================
-    # TEST F: Razorpay Subscription TEST MODE -> Verify Signature -> Trusted Backend Verification
+    # TEST F: Razorpay Subscription Mode -> Verify Signature -> Trusted Backend Verification
     # =============================================================
-    assert RAZORPAY_MODE == "test", f"Platform subscription must be in TEST mode! Current: {RAZORPAY_MODE}"
+    assert RAZORPAY_MODE in ("test", "live"), f"Platform subscription must be in TEST or LIVE mode! Current: {RAZORPAY_MODE}"
     if RAZORPAY_KEY_ID:
-        assert RAZORPAY_KEY_ID.startswith("rzp_test_"), f"Razorpay Key ID must start with rzp_test_! Current: {RAZORPAY_KEY_ID}"
+        assert RAZORPAY_KEY_ID.startswith(f"rzp_{RAZORPAY_MODE}_"), f"Razorpay Key ID must start with rzp_{RAZORPAY_MODE}_! Current: {RAZORPAY_KEY_ID}"
 
     # Business A creates subscription payment intent
     sub_res = client.post(

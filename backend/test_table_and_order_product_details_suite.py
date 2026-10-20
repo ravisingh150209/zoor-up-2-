@@ -36,13 +36,13 @@ def test_suite():
     # 1. Razorpay Test Mode Verification
     # -------------------------------------------------------------
     total += 1
-    print("\n--- TEST 1: Razorpay Mode is strictly TEST ---")
+    print("\n--- TEST 1: Razorpay Mode is valid (TEST or LIVE) ---")
     razorpay_mode = RAZORPAY_MODE.lower()
     razorpay_key = RAZORPAY_KEY_ID
-    assert razorpay_mode == "test", f"Razorpay mode is not 'test'! Got: {razorpay_mode}"
+    assert razorpay_mode in ("test", "live"), f"Razorpay mode must be 'test' or 'live'! Got: {razorpay_mode}"
     if razorpay_key:
-        assert razorpay_key.startswith("rzp_test_"), f"Razorpay key must start with 'rzp_test_'. Got: {razorpay_key}"
-    print(f"[PASS] Razorpay Mode is confirmed TEST (mode={razorpay_mode}, key_prefix={razorpay_key[:8]}...)")
+        assert razorpay_key.startswith(f"rzp_{razorpay_mode}_"), f"Razorpay key must start with 'rzp_{razorpay_mode}_'. Got: {razorpay_key}"
+    print(f"[PASS] Razorpay Mode is confirmed {razorpay_mode.upper()} (mode={razorpay_mode}, key_prefix={razorpay_key[:8]}...)")
     passed += 1
 
     # -------------------------------------------------------------
@@ -138,6 +138,8 @@ def test_suite():
     customer_headers = {"Authorization": f"Bearer {customer_token}"}
 
     # First reservation
+    from datetime import date, timedelta
+    future_date = (date.today() + timedelta(days=2)).isoformat()
     res1 = client.post(
         "/api/customer/table-reservations",
         headers=customer_headers,
@@ -145,7 +147,7 @@ def test_suite():
             "business_id": test_biz_id,
             "customer_name": "Rahul Verma",
             "customer_phone": customer_phone,
-            "booking_date": "2026-10-15",
+            "booking_date": future_date,
             "booking_time": "19:00",
             "party_size": 2,
             "table_id": available_2[0]["id"],
@@ -162,7 +164,7 @@ def test_suite():
         headers=customer_headers,
         json={
             "business_id": test_biz_id,
-            "booking_date": "2026-10-15",
+            "booking_date": future_date,
             "booking_time": "19:30",  # inside the 90 min window
             "party_size": 2,
             "table_id": available_2[0]["id"]

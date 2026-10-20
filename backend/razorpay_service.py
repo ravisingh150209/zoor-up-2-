@@ -22,6 +22,16 @@ RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "").strip()
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "").strip()
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "").strip() or RAZORPAY_KEY_SECRET
 
+
+def refresh_razorpay_config():
+    """Refreshes module configuration dynamically from backend environment variables."""
+    global RAZORPAY_MODE, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET
+    RAZORPAY_MODE = os.getenv("RAZORPAY_MODE", "test").strip().lower()
+    RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "").strip()
+    RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "").strip()
+    RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "").strip() or RAZORPAY_KEY_SECRET
+
+
 # Connection and response timeout adapter (10s connect, 15s read)
 class TimeoutHTTPAdapter(requests.adapters.HTTPAdapter):
     def __init__(self, timeout=None, *args, **kwargs):
@@ -37,14 +47,58 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def validate_razorpay_config():
-    """Validates configuration consistency without exposing credentials."""
-    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
-        raise RuntimeError("Razorpay credentials not configured on server.")
-    if RAZORPAY_MODE == "test" and not RAZORPAY_KEY_ID.startswith("rzp_test_"):
-        raise RuntimeError("Configuration error: RAZORPAY_MODE is 'test' but key ID does not start with 'rzp_test_'.")
-    if RAZORPAY_MODE == "live" and not RAZORPAY_KEY_ID.startswith("rzp_live_"):
-        raise RuntimeError("Configuration error: RAZORPAY_MODE is 'live' but key ID does not start with 'rzp_live_'.")
+def _sanitize_error_message(err: Any) -> str:
+    """Sanitizes error messages, never leaking secrets in logs or API responses."""
+    err_str = str(err)
+    secrets_to_check = [
+        RAZORPAY_KEY_SECRET,
+        RAZORPAY_WEBHOOK_SECRET,
+        os.getenv("RAZORPAY_KEY_SECRET", ""),
+        os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+    ]
+    for s in secrets_to_check:
+        clean = (s or "").strip()
+        if clean and len(clean) >= 4 and clean in err_str:
+            err_str = err_str.replace(clean, "[REDACTED]")
+    return err_str
+
+
+def validate_razorpay_config(
+    mode: Optional[str] = None,
+    key_id: Optional[str] = None,
+    key_secret: Optional[str] = None
+) -> bool:
+    """
+    Validates Razorpay configuration consistency without exposing credentials.
+    Supports both 'test' and 'live' modes.
+    Enforces rzp_test_ prefix in test mode and rzp_live_ prefix in live mode.
+    """
+    resolved_mode = (mode if mode is not None else RAZORPAY_MODE).strip().lower()
+    resolved_key_id = (key_id if key_id is not None else RAZORPAY_KEY_ID).strip()
+    resolved_key_secret = (key_secret if key_secret is not None else RAZORPAY_KEY_SECRET).strip()
+
+    if resolved_mode not in ("test", "live"):
+        raise RuntimeError(f"Configuration error: Invalid RAZORPAY_MODE '{resolved_mode}'. Allowed modes are 'test' and 'live'.")
+
+    if not resolved_key_id or not resolved_key_secret:
+        raise RuntimeError("Razorpay credentials not configured on server (missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET).")
+
+    if resolved_mode == "test":
+        if not resolved_key_id.startswith("rzp_test_"):
+            raise RuntimeError("Configuration error: RAZORPAY_MODE is 'test' but key ID does not start with 'rzp_test_'.")
+        if len(resolved_key_id) <= len("rzp_test_"):
+            raise RuntimeError("Configuration error: RAZORPAY_KEY_ID must include a valid identifier after 'rzp_test_'.")
+
+    if resolved_mode == "live":
+        if not resolved_key_id.startswith("rzp_live_"):
+            raise RuntimeError("Configuration error: RAZORPAY_MODE is 'live' but key ID does not start with 'rzp_live_'.")
+        if len(resolved_key_id) <= len("rzp_live_"):
+            raise RuntimeError("Configuration error: RAZORPAY_KEY_ID must include a valid identifier after 'rzp_live_'.")
+
+    if len(resolved_key_secret) < 8:
+        raise RuntimeError("Configuration error: RAZORPAY_KEY_SECRET is invalid or too short.")
+
+    return True
 
 
 def get_razorpay_client() -> razorpay.Client:
@@ -94,23 +148,27 @@ def create_razorpay_order(
         })
         return razorpay_order
     except Exception as e:
-        # Sanitize error message, never leak secret keys
-        err_str = str(e)
-        if RAZORPAY_KEY_SECRET and RAZORPAY_KEY_SECRET in err_str:
-            err_str = err_str.replace(RAZORPAY_KEY_SECRET, "[REDACTED]")
+        err_str = _sanitize_error_message(e)
         raise RuntimeError(f"Razorpay order creation failed: {err_str}")
 
 
-def verify_razorpay_signature(razorpay_order_id: str, razorpay_payment_id: str, razorpay_signature: str) -> bool:
+def verify_razorpay_signature(
+    razorpay_order_id: str,
+    razorpay_payment_id: str,
+    razorpay_signature: str,
+    secret: Optional[str] = None
+) -> bool:
     """
     Verify Razorpay payment signature securely using constant-time comparison.
+    Uses the active mode's secret.
     """
-    if not RAZORPAY_KEY_SECRET or not razorpay_signature:
+    key_secret = secret if secret is not None else RAZORPAY_KEY_SECRET
+    if not key_secret or not razorpay_signature or not razorpay_order_id or not razorpay_payment_id:
         return False
     
     payload = f"{razorpay_order_id}|{razorpay_payment_id}".encode("utf-8")
     expected_signature = hmac.new(
-        RAZORPAY_KEY_SECRET.encode("utf-8"),
+        key_secret.encode("utf-8"),
         payload,
         hashlib.sha256
     ).hexdigest()
@@ -118,17 +176,32 @@ def verify_razorpay_signature(razorpay_order_id: str, razorpay_payment_id: str, 
     return hmac.compare_digest(expected_signature, razorpay_signature)
 
 
-def verify_razorpay_webhook_signature(raw_body: bytes, signature: str) -> bool:
+def verify_razorpay_webhook_signature(
+    raw_body: Any,
+    signature: str,
+    webhook_secret: Optional[str] = None
+) -> bool:
     """
     Verify Razorpay webhook signature securely.
+    Uses RAZORPAY_WEBHOOK_SECRET, falling back to RAZORPAY_KEY_SECRET if not set.
     """
-    secret = RAZORPAY_WEBHOOK_SECRET or RAZORPAY_KEY_SECRET
+    secret = (
+        webhook_secret if webhook_secret is not None
+        else (RAZORPAY_WEBHOOK_SECRET or RAZORPAY_KEY_SECRET)
+    )
     if not secret or not signature:
+        return False
+    
+    if isinstance(raw_body, str):
+        body_bytes = raw_body.encode("utf-8")
+    elif isinstance(raw_body, (bytes, bytearray)):
+        body_bytes = bytes(raw_body)
+    else:
         return False
     
     expected_signature = hmac.new(
         secret.encode("utf-8"),
-        raw_body,
+        body_bytes,
         hashlib.sha256
     ).hexdigest()
     
@@ -613,9 +686,7 @@ def create_razorpay_order_for_subscription(
             "partial_payment": False,
         })
     except Exception as e:
-        err_str = str(e)
-        if RAZORPAY_KEY_SECRET and RAZORPAY_KEY_SECRET in err_str:
-            err_str = err_str.replace(RAZORPAY_KEY_SECRET, "[REDACTED]")
+        err_str = _sanitize_error_message(e)
         raise RuntimeError(f"Razorpay subscription order creation failed: {err_str}")
         
     now_iso = _now_iso()
