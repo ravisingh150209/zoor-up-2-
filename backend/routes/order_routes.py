@@ -476,38 +476,92 @@ def create_order(
                 pass
 
     normalized_lines = []
-    seen_products = {}
+    seen_items = {}
     for item in request.items:
         product_id = item.product_id.strip()
-        seen_products[product_id] = seen_products.get(product_id, 0) + item.quantity
-    if any(quantity > 100 for quantity in seen_products.values()):
+        serving_id = (getattr(item, "serving_id", None) or getattr(item, "variant_id", None) or "").strip()
+        serving_name = (getattr(item, "serving_name", None) or getattr(item, "variant_name", None) or "").strip()
+        key = (product_id, serving_id, serving_name)
+        seen_items[key] = seen_items.get(key, 0) + item.quantity
+
+    product_totals = {}
+    for (p_id, _, _), qty in seen_items.items():
+        product_totals[p_id] = product_totals.get(p_id, 0) + qty
+    if any(quantity > 100 for quantity in product_totals.values()):
         raise HTTPException(status_code=400, detail="An item quantity cannot exceed 100.")
 
     products = get_collection("products")
     subtotal = Decimal("0.00")
-    for product_id, quantity in seen_products.items():
+    for (product_id, serving_id, client_serving_name), quantity in seen_items.items():
         product = products.find_one({"id": product_id, "business_id": business_id})
         if not product:
             raise HTTPException(status_code=400, detail="One or more products do not belong to this business.")
         if product.get("active", product.get("available", True)) is False:
             raise HTTPException(status_code=400, detail="One or more products are unavailable.")
-        try:
-            regular_price = Decimal(str(product.get("price", 0)))
-            discount_val = product.get("discount_price")
-            if discount_val is None and isinstance(product.get("metadata"), dict):
-                discount_val = product["metadata"].get("discount_price")
-            if discount_val is not None and str(discount_val).strip() not in ("", "None", "null"):
-                unit_price = Decimal(str(discount_val))
-            else:
-                unit_price = regular_price
-            if unit_price < 0 or regular_price < 0 or unit_price > regular_price:
-                raise InvalidOperation
-        except (InvalidOperation, ValueError, TypeError):
-            raise HTTPException(status_code=400, detail="A product has invalid server pricing.") from None
+
+        # Check for serving options or variants
+        servings_config = product.get("servings") or product.get("variants") or product.get("serving_options")
+        if not servings_config and isinstance(product.get("metadata"), dict):
+            servings_config = (
+                product["metadata"].get("servings")
+                or product["metadata"].get("variants")
+                or product["metadata"].get("serving_options")
+            )
+        if not isinstance(servings_config, list):
+            servings_config = []
+
+        resolved_serving_title = None
+        if serving_id:
+            matched_serving = None
+            for s in servings_config:
+                if isinstance(s, dict):
+                    cand_id = str(s.get("id") or s.get("serving_id") or s.get("variant_id") or s.get("name") or "").strip()
+                    if cand_id.lower() == serving_id.lower() or (client_serving_name and str(s.get("name") or "").strip().lower() == client_serving_name.lower()):
+                        matched_serving = s
+                        break
+            if not matched_serving:
+                raise HTTPException(status_code=400, detail="Invalid serving option or variant ID.")
+
+            serving_price_raw = matched_serving.get("price")
+            if serving_price_raw is None or str(serving_price_raw).strip() in ("", "None", "null"):
+                raise HTTPException(status_code=400, detail="A product has invalid serving pricing.")
+            try:
+                s_regular = Decimal(str(serving_price_raw))
+                s_disc = matched_serving.get("discount_price")
+                if s_disc is not None and str(s_disc).strip() not in ("", "None", "null"):
+                    s_unit = Decimal(str(s_disc))
+                else:
+                    s_unit = s_regular
+                if s_unit < 0 or s_regular < 0 or s_unit > s_regular:
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="A product has invalid serving pricing.") from None
+
+            unit_price = s_unit
+            resolved_serving_title = str(matched_serving.get("name") or matched_serving.get("serving_name") or matched_serving.get("title") or serving_id)
+        else:
+            price_raw = product.get("price")
+            if (price_raw is None or str(price_raw).strip() in ("", "None", "null")) and servings_config:
+                raise HTTPException(status_code=400, detail="A product has invalid serving pricing.")
+            if price_raw is None or str(price_raw).strip() in ("", "None", "null"):
+                raise HTTPException(status_code=400, detail="A product has invalid server pricing.")
+            try:
+                regular_price = Decimal(str(price_raw))
+                discount_val = product.get("discount_price")
+                if discount_val is None and isinstance(product.get("metadata"), dict):
+                    discount_val = product["metadata"].get("discount_price")
+                if discount_val is not None and str(discount_val).strip() not in ("", "None", "null"):
+                    unit_price = Decimal(str(discount_val))
+                else:
+                    unit_price = regular_price
+                if unit_price < 0 or regular_price < 0 or unit_price > regular_price:
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="A product has invalid server pricing.") from None
 
         line_total = _money(unit_price * quantity)
         subtotal += line_total
-        normalized_lines.append({
+        line_item = {
             "product_id": product_id,
             "id": product_id,
             "name": product.get("name", "Product"),
@@ -515,7 +569,12 @@ def create_order(
             "price": float(unit_price),
             "unit_price": float(unit_price),
             "line_total": float(line_total),
-        })
+        }
+        if serving_id:
+            line_item["serving_id"] = serving_id
+        if resolved_serving_title:
+            line_item["serving_name"] = resolved_serving_title
+        normalized_lines.append(line_item)
 
     subtotal = _money(subtotal)
     applied_discount = Decimal("0.00")
@@ -546,7 +605,7 @@ def create_order(
 
     fingerprint_data = {
         "business_id": business_id,
-        "items": sorted((line["product_id"], line["quantity"]) for line in normalized_lines),
+        "items": sorted((line["product_id"], line.get("serving_id") or "", line["quantity"]) for line in normalized_lines),
         "order_type": request.order_type,
         "table_id": request.table_id,
         "table_number": table_name,

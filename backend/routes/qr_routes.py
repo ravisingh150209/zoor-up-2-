@@ -1265,6 +1265,19 @@ def create_business_product(
     product_id = f"prod_{uuid.uuid4().hex[:10]}"
     now_iso = datetime.now().isoformat()
 
+    price = float(req.price)
+    if price < 0:
+        raise HTTPException(status_code=400, detail="Product regular price cannot be negative.")
+
+    if req.discount_price is not None:
+        discount_price = float(req.discount_price)
+        if discount_price < 0:
+            raise HTTPException(status_code=400, detail="Discount price cannot be negative.")
+        if discount_price > price:
+            raise HTTPException(status_code=400, detail="Discount price cannot exceed regular price.")
+    else:
+        discount_price = price
+
     active_img = req.image_url or req.image or None
 
     new_prod = {
@@ -1272,8 +1285,8 @@ def create_business_product(
         "business_id": business_id,
         "name": req.name.strip(),
         "category": req.category.strip() if req.category else "General",
-        "price": float(req.price),
-        "discount_price": float(req.discount_price if req.discount_price is not None else req.price),
+        "price": price,
+        "discount_price": discount_price,
         "description": req.description or "",
         "type": req.type or "product",
         "image": active_img,
@@ -1285,6 +1298,11 @@ def create_business_product(
         "created_at": now_iso,
         "updated_at": now_iso
     }
+
+    if req.servings is not None:
+        new_prod["servings"] = req.servings
+    if req.variants is not None:
+        new_prod["variants"] = req.variants
 
     products_col.insert_one(new_prod)
     return new_prod
@@ -1306,6 +1324,20 @@ def update_business_product(
         raise HTTPException(status_code=404, detail="Product not found.")
 
     updates = {k: v for k, v in req.dict().items() if v is not None}
+    
+    # Authoritatively validate prices
+    new_price = float(updates["price"]) if "price" in updates else float(existing.get("price") or 0)
+    new_discount = float(updates["discount_price"]) if "discount_price" in updates else (
+        float(existing["discount_price"]) if existing.get("discount_price") is not None else None
+    )
+    if new_price < 0:
+        raise HTTPException(status_code=400, detail="Product regular price cannot be negative.")
+    if new_discount is not None:
+        if new_discount < 0:
+            raise HTTPException(status_code=400, detail="Discount price cannot be negative.")
+        if new_discount > new_price:
+            raise HTTPException(status_code=400, detail="Discount price cannot exceed regular price.")
+
     if "image_url" in updates and not updates.get("image"):
         updates["image"] = updates["image_url"]
     elif "image" in updates and not updates.get("image_url"):

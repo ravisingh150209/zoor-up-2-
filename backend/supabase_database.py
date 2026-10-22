@@ -145,9 +145,24 @@ def _normalize_doc(doc: Dict[str, Any], table_name: str = "") -> Dict[str, Any]:
     if table_name == "orders" and normalized.get("order_id"):
         normalized["id"] = normalized["order_id"]
         normalized["_id"] = normalized["order_id"]
-    if table_name == "products" and isinstance(normalized.get("metadata"), dict) and normalized["metadata"].get("original_id"):
-        normalized["id"] = normalized["metadata"]["original_id"]
-        normalized["_id"] = normalized["metadata"]["original_id"]
+    if table_name == "products":
+        if isinstance(normalized.get("metadata"), dict) and normalized["metadata"].get("original_id"):
+            normalized["id"] = normalized["metadata"]["original_id"]
+            normalized["_id"] = normalized["metadata"]["original_id"]
+        desc = normalized.get("description") or ""
+        if isinstance(desc, str) and "<!--ZOORUP_META:" in desc:
+            try:
+                import json as _json
+                meta_json = desc.split("<!--ZOORUP_META:")[1].split("-->")[0]
+                meta_data = _json.loads(meta_json)
+                if isinstance(meta_data, dict):
+                    if "servings" in meta_data:
+                        normalized["servings"] = meta_data["servings"]
+                    if "variants" in meta_data:
+                        normalized["variants"] = meta_data["variants"]
+                normalized["description"] = desc.split("<!--ZOORUP_META:")[0].strip()
+            except Exception:
+                pass
     if table_name == "customers":
         if normalized.get("full_name") and not normalized.get("name"):
             normalized["name"] = normalized["full_name"]
@@ -379,6 +394,19 @@ class SupabaseCollection:
                 doc["metadata"]["product_code"] = orig_id
             doc["id"] = _to_db_uuid(orig_id)
 
+        if self.table_name == "products":
+            servings_data = doc.pop("servings", None)
+            variants_data = doc.pop("variants", None)
+            if servings_data is not None or variants_data is not None:
+                import json as _json
+                meta_dict = {}
+                if servings_data is not None:
+                    meta_dict["servings"] = servings_data
+                if variants_data is not None:
+                    meta_dict["variants"] = variants_data
+                base_desc = str(doc.get("description") or "").split("<!--ZOORUP_META:")[0].strip()
+                doc["description"] = (base_desc + " <!--ZOORUP_META:" + _json.dumps(meta_dict) + "-->").strip()
+
         # Sanitize non-UUID foreign keys for tables where store_id / customer_id are UUID
         if "store_id" in doc and not _is_valid_uuid(doc["store_id"]):
             if "business_id" not in doc:
@@ -489,15 +517,18 @@ class SupabaseCollection:
                         del doc["store_id"]
                         continue
                 if "PGRST204" in err_msg or "Could not find the" in err_msg:
-                    match = re.search(r"Could not find the '([^']+)' column", err_msg)
+                    match = re.search(r"Could not find the '([^']*)' column", err_msg)
                     if match:
                         bad_col = match.group(1)
                         if bad_col in doc:
                             val = doc.pop(bad_col)
-                            if bad_col != "metadata" and self.table_name in ("businesses", "stores", "products", "customers", "orders", "profiles", "payments"):
+                            if bad_col and bad_col != "metadata" and self.table_name in ("businesses", "stores", "customers", "orders", "profiles", "payments"):
                                 if "metadata" not in doc or not isinstance(doc["metadata"], dict):
                                     doc["metadata"] = {}
                                 doc["metadata"][bad_col] = val
+                            continue
+                        elif bad_col == "metadata":
+                            doc.pop("metadata", None)
                             continue
                 raise
 
@@ -525,6 +556,19 @@ class SupabaseCollection:
         if "_id" in values:
             values["id"] = str(values["_id"])
             del values["_id"]
+
+        if self.table_name == "products":
+            servings_data = values.pop("servings", None)
+            variants_data = values.pop("variants", None)
+            if servings_data is not None or variants_data is not None:
+                import json as _json
+                meta_dict = {}
+                if servings_data is not None:
+                    meta_dict["servings"] = servings_data
+                if variants_data is not None:
+                    meta_dict["variants"] = variants_data
+                base_desc = str(values.get("description") or (existing.get("description") if existing else "") or "").split("<!--ZOORUP_META:")[0].strip()
+                values["description"] = (base_desc + " <!--ZOORUP_META:" + _json.dumps(meta_dict) + "-->").strip()
 
         if self.table_name in ("users", "customers", "profiles"):
             for field in ("email", "login_email", "phone"):
@@ -610,17 +654,22 @@ class SupabaseCollection:
             except Exception as exc:
                 err_msg = str(exc)
                 if "PGRST204" in err_msg or "Could not find the" in err_msg:
-                    match = re.search(r"Could not find the '([^']+)' column", err_msg)
+                    match = re.search(r"Could not find the '([^']*)' column", err_msg)
                     if match:
                         bad_col = match.group(1)
                         if bad_col in values:
                             val = values.pop(bad_col)
-                            if bad_col != "metadata" and self.table_name in ("businesses", "stores", "products", "customers", "orders", "profiles", "payments", "invoices"):
+                            if bad_col and bad_col != "metadata" and self.table_name in ("businesses", "stores", "customers", "orders", "profiles", "payments", "invoices"):
                                 existing_meta = dict(existing.get("metadata") or {}) if existing and isinstance(existing.get("metadata"), dict) else {}
                                 if "metadata" in values and isinstance(values["metadata"], dict):
                                     existing_meta.update(values["metadata"])
                                 existing_meta[bad_col] = val
                                 values["metadata"] = existing_meta
+                            if not values:
+                                return UpdateResult(1, 0)
+                            continue
+                        elif bad_col == "metadata":
+                            values.pop("metadata", None)
                             if not values:
                                 return UpdateResult(1, 0)
                             continue

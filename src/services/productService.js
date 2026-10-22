@@ -99,11 +99,25 @@ export const productService = {
 
   addProduct: async (businessId, itemData) => {
     const activeImage = itemData.image_url || itemData.image || null;
+    const priceNum = Number(itemData.price);
+    if (isNaN(priceNum) || priceNum < 0) {
+      throw new Error('Product price must be a non-negative number.');
+    }
+    let discNum = itemData.discount_price !== undefined && itemData.discount_price !== '' && itemData.discount_price !== null
+      ? Number(itemData.discount_price)
+      : priceNum;
+    if (isNaN(discNum) || discNum < 0) {
+      throw new Error('Discount price must be a non-negative number.');
+    }
+    if (discNum > priceNum) {
+      throw new Error('Special discount price cannot exceed regular price.');
+    }
+
     const payload = {
       name: itemData.name,
       category: itemData.category || 'General',
-      price: Number(itemData.price),
-      discount_price: itemData.discount_price ? Number(itemData.discount_price) : Number(itemData.price),
+      price: priceNum,
+      discount_price: discNum,
       stock: itemData.type === 'service' ? 999 : Number(itemData.stock || 50),
       sku: itemData.sku || `SKU-${Date.now().toString(36).toUpperCase()}`,
       barcode: itemData.barcode || `${Date.now()}`,
@@ -112,6 +126,8 @@ export const productService = {
       image_url: activeImage,
       active: itemData.active !== undefined ? Boolean(itemData.active) : true,
       description: itemData.description || '',
+      servings: itemData.servings || undefined,
+      variants: itemData.variants || undefined,
     };
 
     // 1. Try Backend API
@@ -174,6 +190,21 @@ export const productService = {
     }
 
     const finalUpdates = { ...updates };
+    if (finalUpdates.price !== undefined && finalUpdates.price !== '') {
+      const pNum = Number(finalUpdates.price);
+      if (isNaN(pNum) || pNum < 0) throw new Error('Product price must be a non-negative number.');
+      finalUpdates.price = pNum;
+    }
+    if (finalUpdates.discount_price !== undefined && finalUpdates.discount_price !== '' && finalUpdates.discount_price !== null) {
+      const dNum = Number(finalUpdates.discount_price);
+      if (isNaN(dNum) || dNum < 0) throw new Error('Discount price must be a non-negative number.');
+      finalUpdates.discount_price = dNum;
+    }
+    if (finalUpdates.price !== undefined && finalUpdates.discount_price !== undefined && finalUpdates.discount_price !== null) {
+      if (finalUpdates.discount_price > finalUpdates.price) {
+        throw new Error('Special discount price cannot exceed regular price.');
+      }
+    }
     if (finalUpdates.image_url !== undefined) {
       finalUpdates.image = finalUpdates.image_url;
     } else if (finalUpdates.image !== undefined) {

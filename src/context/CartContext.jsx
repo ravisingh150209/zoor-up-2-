@@ -101,21 +101,29 @@ export const CartProvider = ({ children }) => {
     }
 
     let nextItems = [...items];
-    const existingIndex = nextItems.findIndex(i => i.id === product.id);
+    const itemServingId = product.serving_id || product.variant_id || null;
+    const existingIndex = nextItems.findIndex(
+      i => (i.product_id || i.id) === product.id && (i.serving_id || i.variant_id || null) === itemServingId
+    );
 
     if (existingIndex > -1) {
       nextItems[existingIndex].quantity = (Number(nextItems[existingIndex].quantity) || 0) + 1;
     } else {
       nextItems.push({
         id: product.id,
+        product_id: product.id,
         name: product.name,
-        price: Number(product.discount_price || product.price) || 0,
+        price: Number(product.serving_price || product.discount_price || product.price) || 0,
         original_price: Number(product.price) || 0,
         image: product.image_url || product.image,
         type: product.type || 'product',
         category: product.category || 'General',
         business_id: itemBizId,
         quantity: 1,
+        ...(product.serving_id ? { serving_id: product.serving_id } : {}),
+        ...(product.variant_id ? { variant_id: product.variant_id } : {}),
+        ...(product.serving_name ? { serving_name: product.serving_name } : {}),
+        ...(product.variant_name ? { variant_name: product.variant_name } : {}),
       });
     }
 
@@ -127,14 +135,19 @@ export const CartProvider = ({ children }) => {
     const itemBizId = targetBizId || product.business_id;
     const newItem = {
       id: product.id,
+      product_id: product.id,
       name: product.name,
-      price: Number(product.discount_price || product.price) || 0,
+      price: Number(product.serving_price || product.discount_price || product.price) || 0,
       original_price: Number(product.price) || 0,
       image: product.image_url || product.image,
       type: product.type || 'product',
       category: product.category || 'General',
       business_id: itemBizId,
       quantity: 1,
+      ...(product.serving_id ? { serving_id: product.serving_id } : {}),
+      ...(product.variant_id ? { variant_id: product.variant_id } : {}),
+      ...(product.serving_name ? { serving_name: product.serving_name } : {}),
+      ...(product.variant_name ? { variant_name: product.variant_name } : {}),
     };
     saveCart([newItem], itemBizId, slug, bName);
     return { success: true };

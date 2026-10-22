@@ -3,7 +3,7 @@ ZOOR UP Pydantic Data Models & Schemas
 """
 import re
 from typing import Optional, Dict, Any, List, Literal
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, model_validator
 from datetime import datetime
 
 # User Roles
@@ -232,14 +232,33 @@ class ProductCreateRequest(BaseModel):
     sku: Optional[str] = None
     barcode: Optional[str] = None
     active: Optional[bool] = True
+    servings: Optional[List[Dict[str, Any]]] = None
+    variants: Optional[List[Dict[str, Any]]] = None
+
+    @model_validator(mode="after")
+    def validate_pricing(self):
+        if self.price < 0:
+            raise ValueError("Product regular price cannot be negative.")
+        if self.discount_price is not None:
+            if self.discount_price < 0:
+                raise ValueError("Discount price cannot be negative.")
+            if self.discount_price > self.price:
+                raise ValueError("Discount price cannot exceed regular price.")
+        return self
 
 
 class OrderItemInput(BaseModel):
     product_id: str = Field(..., min_length=1, max_length=128)
     quantity: int = Field(..., ge=1, le=100)
+    serving_id: Optional[str] = Field(None, max_length=128)
+    variant_id: Optional[str] = Field(None, max_length=128)
+    serving_name: Optional[str] = Field(None, max_length=128)
+    variant_name: Optional[str] = Field(None, max_length=128)
+    price: Optional[float] = Field(None, ge=0)
+    serving_price: Optional[float] = Field(None, ge=0)
 
     class Config:
-        extra = "forbid"
+        extra = "ignore"
 
 
 class OrderCreateRequest(BaseModel):
@@ -277,6 +296,19 @@ class ProductUpdateRequest(BaseModel):
     sku: Optional[str] = None
     barcode: Optional[str] = None
     active: Optional[bool] = None
+    servings: Optional[List[Dict[str, Any]]] = None
+    variants: Optional[List[Dict[str, Any]]] = None
+
+    @model_validator(mode="after")
+    def validate_pricing(self):
+        if self.price is not None and self.price < 0:
+            raise ValueError("Product regular price cannot be negative.")
+        if self.discount_price is not None and self.discount_price < 0:
+            raise ValueError("Discount price cannot be negative.")
+        if self.price is not None and self.discount_price is not None:
+            if self.discount_price > self.price:
+                raise ValueError("Discount price cannot exceed regular price.")
+        return self
 
 
 class SocialLinkRequest(BaseModel):

@@ -31,7 +31,11 @@ const getIdempotencyKey = (orderData) => {
   const signature = JSON.stringify({
     business_id: orderData.business_id,
     items: [...orderData.items]
-      .map(({ id, quantity }) => ({ id, quantity }))
+      .map((item) => ({
+        id: item.product_id || item.id,
+        quantity: item.quantity,
+        serving_id: item.serving_id || item.variant_id || null,
+      }))
       .filter(item => item.id != null)
       .sort((a, b) => String(a.id || '').localeCompare(String(b.id || ''))),
     order_type: orderData.order_type,
@@ -91,6 +95,10 @@ export const orderService = {
         items: orderData.items.map((item) => ({
           product_id: item.product_id || item.id,
           quantity: Number(item.quantity),
+          ...(item.serving_id ? { serving_id: item.serving_id } : {}),
+          ...(item.variant_id ? { variant_id: item.variant_id } : {}),
+          ...(item.serving_name ? { serving_name: item.serving_name } : {}),
+          ...(item.variant_name ? { variant_name: item.variant_name } : {}),
         })),
         order_type: orderData.order_type,
         payment_method: orderData.payment_method,

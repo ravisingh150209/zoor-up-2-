@@ -106,9 +106,27 @@ export const ProductsServices = () => {
 
   const handleSaveItem = async (e) => {
     e.preventDefault();
-    if (!formData.name || !formData.price) {
+    if (!formData.name?.trim() || formData.price === '' || formData.price === null || formData.price === undefined) {
       addToast('Name and price are required', 'error');
       return;
+    }
+
+    const regPrice = Number(formData.price);
+    if (isNaN(regPrice) || regPrice < 0) {
+      addToast('Regular price must be a valid positive number', 'error');
+      return;
+    }
+
+    if (formData.discount_price !== '' && formData.discount_price !== null && formData.discount_price !== undefined) {
+      const discPrice = Number(formData.discount_price);
+      if (isNaN(discPrice) || discPrice < 0) {
+        addToast('Discount price must be a valid positive number', 'error');
+        return;
+      }
+      if (discPrice > regPrice) {
+        addToast('Special discount price cannot exceed regular price', 'error');
+        return;
+      }
     }
 
     try {
@@ -122,7 +140,7 @@ export const ProductsServices = () => {
       setIsModalOpen(false);
       loadItems();
     } catch (e) {
-      addToast('Error saving catalog item', 'error');
+      addToast(e?.message || 'Error saving catalog item', 'error');
     }
   };
 
